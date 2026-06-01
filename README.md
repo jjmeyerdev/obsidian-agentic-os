@@ -1,6 +1,6 @@
 # Agentic OS
 
-An Obsidian plugin that renders a "command center" dashboard in a right-side pane —
+An Obsidian plugin that renders a "command center" dashboard in the main editor area —
 token burn, project metrics, and a research feed — ported from a hand-built HTML/CSS
 design into the Obsidian view API.
 
@@ -10,7 +10,7 @@ The UI is static markup (no live data yet): a tabbed dashboard plus three full-s
 
 ## Features
 
-- Right-pane view (`agentic-os-view`) with three tabs — Overview, Projects, Research.
+- Main-area view (`agentic-os-view`) with three tabs — Overview, Projects, Research.
 - "Full ↗" navigation into Release Radar / Hacker News / Morning Brief views, with a
   back button that returns you to where you were.
 - Ribbon icon and command (**Open Agentic OS**) that reveal the pane, or focus the

@@ -180,7 +180,7 @@ export default class AgenticOSPlugin extends Plugin {
 		}
 	}
 
-	/** Open the pane in the right split, or reveal it if it already exists. */
+	/** Open the dashboard in the main (center) area, or reveal it if already open. */
 	async activateView(): Promise<void> {
 		const { workspace } = this.app;
 
@@ -190,8 +190,7 @@ export default class AgenticOSPlugin extends Plugin {
 			return;
 		}
 
-		const leaf = workspace.getRightLeaf(false);
-		if (!leaf) return;
+		const leaf = workspace.getLeaf("tab");
 		await leaf.setViewState({ type: VIEW_TYPE_AGENTIC_OS, active: true });
 		await workspace.revealLeaf(leaf);
 	}

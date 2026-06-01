@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Obsidian plugin that renders a static "command center" dashboard in a right-side
-leaf pane (`agentic-os-view`). It's a faithful port of a hand-built HTML/CSS design
-into the Obsidian plugin API — there is no live data; the UI is fixed markup.
+An Obsidian plugin that renders a static "command center" dashboard in a main-area
+leaf (`agentic-os-view`, opened as a center tab). It's a faithful port of a
+hand-built HTML/CSS design into the Obsidian plugin API — there is no live data; the
+UI is fixed markup.
 
 ## Commands
 

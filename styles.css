@@ -1303,6 +1303,18 @@
 .agentic-os .gh-repo__lang-name--python     { color: var(--lang-python); }
 .agentic-os .gh-repo__lang-name--javascript { color: var(--lang-javascript); }
 .agentic-os .gh-repo__lang-name--shell      { color: var(--lang-shell); }
+/* Dynamic repo cards use a colored dot (inline background) in place of a
+   per-language logo SVG, so any language renders without a bundled glyph. */
+.agentic-os .gh-repo__lang-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.agentic-os .releases-empty {
+  padding: 14px 0 2px;
+  color: var(--text-dim);
+}
 .agentic-os .gh-repo__star {
   display: flex;
   align-items: center;

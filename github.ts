@@ -230,7 +230,7 @@ const LANG_COLORS: Record<string, string> = {
 const LANG_FALLBACK = "#8b8b8b";
 
 export interface ProjectRepo {
-	name: string; desc: string; lang: string | null; langColor: string;
+	name: string; url: string; desc: string; lang: string | null; langColor: string;
 	stars: number; updated: string; commits: number; openPRs: number; issues: number;
 }
 export interface ProjectRelease { tag: string; repo: string; desc: string; age: string; }
@@ -306,6 +306,7 @@ function buildRepoCards(repoNodes: any[], now: number): ProjectRepo[] {
 			const lang = r.primaryLanguage?.name ?? null;
 			return {
 				name: r.name,
+				url: r.url || "",
 				desc: r.description || "",
 				lang,
 				langColor: lang ? (LANG_COLORS[lang] ?? LANG_FALLBACK) : LANG_FALLBACK,
@@ -337,7 +338,7 @@ export async function readProjectRepos(username: string): Promise<ProjectRepo[] 
 	const query =
 		`query($l:String!,$since:GitTimestamp!){user(login:$l){` +
 		`repositories(first:100,ownerAffiliations:OWNER,isFork:false){nodes{` +
-		`name description primaryLanguage{name} stargazerCount pushedAt ` +
+		`name url description primaryLanguage{name} stargazerCount pushedAt ` +
 		`issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount} ` +
 		`defaultBranchRef{target{... on Commit{history(since:$since){totalCount}}}}}}}}`;
 	try {
@@ -379,7 +380,7 @@ export async function readProjectStats(username: string): Promise<ProjectStats> 
 		`cur:contributionsCollection{contributionCalendar{totalContributions weeks{contributionDays{date contributionCount}}}}` +
 		`prev:contributionsCollection(from:$pf,to:$pt){contributionCalendar{totalContributions}}` +
 		`repositories(first:100,ownerAffiliations:OWNER,isFork:false){nodes{` +
-		`name description primaryLanguage{name} stargazerCount pushedAt ` +
+		`name url description primaryLanguage{name} stargazerCount pushedAt ` +
 		`issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount} ` +
 		`defaultBranchRef{target{... on Commit{history(since:$since){totalCount}}}} ` +
 		`languages(first:8){edges{size node{name}}} releases(last:1){nodes{tagName name publishedAt}}}}}}`;

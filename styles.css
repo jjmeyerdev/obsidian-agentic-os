@@ -343,6 +343,28 @@
   100% { background-position: -50% 0, 0 0; }
 }
 
+/* Sessions full-view list shimmer — same idiom as the Projects skeleton, but scoped
+   to .rank-list so the header/toolbar stay put while the (fast, local) read resolves;
+   without it the markup's placeholder rows flash before live data paints. Rows get a
+   min-height so the sheen has a body even though their hidden contents are empty. */
+.agentic-os .rank-list.is-loading .rank-row {
+  position: relative;
+  overflow: hidden;
+  min-height: 44px;
+}
+.agentic-os .rank-list.is-loading .rank-row > * { visibility: hidden; }
+.agentic-os .rank-list.is-loading .rank-row::after {
+  content: "";
+  position: absolute;
+  inset: 8px 0;
+  border-radius: 6px;
+  background:
+    linear-gradient(90deg, transparent 0%, var(--accent-soft) 50%, transparent 100%),
+    var(--inset);
+  background-size: 220% 100%, 100% 100%;
+  animation: ao-skeleton 1.4s ease-in-out infinite;
+}
+
 /* ============================================================================
    SHARED PRIMITIVES  —  used across Screen 1 components
    ========================================================================== */
@@ -733,6 +755,14 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
+}
+/* Right side of the header row: keeps the age + "Full ↗" pill grouped so the
+   row's space-between still pins them to the right edge. */
+.agentic-os .latest-session__actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 .agentic-os .latest-session__kicker {
   display: inline-flex;
@@ -1235,6 +1265,11 @@
 .agentic-os .gh-repo:hover {
   border-color: rgba(34,211,238,0.35);
   box-shadow: var(--ring-hover);
+}
+.agentic-os .gh-repo[data-repo-url] { cursor: pointer; }
+.agentic-os .gh-repo[data-repo-url]:focus-visible {
+  outline: 2px solid rgba(34,211,238,0.6);
+  outline-offset: 2px;
 }
 .agentic-os .gh-repo__head {
   display: flex;

@@ -4,10 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Obsidian plugin that renders a static "command center" dashboard in a main-area
-leaf (`agentic-os-view`, opened as a center tab). It's a faithful port of a
-hand-built HTML/CSS design into the Obsidian plugin API — there is no live data; the
-UI is fixed markup.
+An Obsidian plugin that renders a "command center" dashboard in a main-area leaf
+(`agentic-os-view`, opened as a center tab). The layout is a faithful port of a
+hand-built HTML/CSS design into the Obsidian plugin API — the markup is static,
+generated template strings (see below) — but **live data is painted into it** at
+runtime from the local Claude Code usage/session files and the `gh` CLI. The values
+baked into the markup are the designer's placeholders; the plugin overwrites them.
 
 ## Commands
 
@@ -75,7 +77,35 @@ the number of `.pill-link` buttons, the generator throws by design.
   icons in a fixed `0 0 100 100` viewBox, so the 22×22 art is wrapped in a scaled
   `<g fill="currentColor">` (the `translate/scale` transform is the only fit knob).
 - `activateView()` reveals an existing leaf if present rather than opening a duplicate.
-- One setting (`openOnStartup`, default off) opens the pane on `onLayoutReady`.
+
+**Live data is painted over the static markup.** Three desktop-only data modules
+(Node `child_process`/`fs`, so this won't run on mobile) feed the dashboard:
+
+- `usage.ts` — the Token Burn panel, from the local Claude Code usage snapshot. The
+  panel reads as a **percentage** off an authoritative snapshot; the token cap is
+  self-calibrated (median of tokens÷pct samples, kept per rate-limit window).
+- `github.ts` — the Overview stat cards (`readGitHubStats`) and the Projects tab
+  (`readProjectStats`, plus the light `readProjectRepos`), all via the `gh` CLI (reuses
+  the user's `gh auth`, no stored token). GUI-launched Obsidian doesn't inherit the
+  shell PATH, so `runGh` augments PATH with the usual Homebrew/usr spots.
+- `session.ts` — the Latest Session card, from the most recent session file on disk.
+
+The pattern: `render()` injects the static markup, then async `refresh*()` methods
+fetch and `paint*()` write into known selectors. **Every refresh carries a monotonic
+"token" guard** (`burnToken`, `ghToken`, `sessionToken`, `projectsToken`, `reposToken`) —
+a slow read bails rather than paint into a newer render. Reads degrade gracefully
+(gh missing/unauthed → cards blank or, for Projects, the static design is kept).
+
+Cadence: Token Burn + Latest Session every 60s, GitHub cards + Projects every 30min
+(see `*_INTERVAL_MS`), plus an instant repaint on `active-leaf-change` when the pane
+becomes active. The Projects tab is the heaviest fetch (paginates each repo's commit
+history), so it's **lazy** — fetched on first tab view, not on load — and shows a
+shimmer skeleton (`#panel-projects.is-loading`) on that first load so the placeholder
+markup never flashes. Opening the tab again refetches just the repo cards via the
+light GraphQL-only `readProjectRepos` (no commit pagination); the rest of the panel
+keeps to the 30min timer. Settings: `window` (rate-limit window) and `githubUsername`
+(blank = the gh-authed user); `openOnStartup` (default off) opens the pane on
+`onLayoutReady`.
 
 **Fonts are loaded in code, not CSS.** `injectFonts()` (in `onload`) builds a
 `<style id="agentic-os-fonts">` with `@font-face` rules whose `src` is

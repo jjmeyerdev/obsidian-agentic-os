@@ -1,0 +1,5 @@
+node_modules/
+main.js
+*.woff2
+.env
+.DS_Store

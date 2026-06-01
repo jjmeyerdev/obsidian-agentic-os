@@ -1,0 +1,9 @@
+{
+	"id": "agentic-os",
+	"name": "Agentic OS",
+	"version": "1.0.0",
+	"minAppVersion": "1.4.0",
+	"description": "A command center pane with token burn, project metrics, and a research feed.",
+	"author": "jay",
+	"isDesktopOnly": false
+}

@@ -1,0 +1,22 @@
+{
+	"name": "agentic-os",
+	"version": "1.0.0",
+	"description": "A command center pane with token burn, project metrics, and a research feed.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"gen-markup": "node scripts/gen-markup.mjs"
+	},
+	"keywords": [],
+	"author": "jay",
+	"license": "MIT",
+	"packageManager": "pnpm@11.5.0",
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"builtin-modules": "^3.3.0",
+		"esbuild": "^0.20.0",
+		"obsidian": "^1.4.11",
+		"typescript": "^5.4.0"
+	}
+}

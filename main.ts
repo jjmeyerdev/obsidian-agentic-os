@@ -5,6 +5,7 @@ import {
 	FULL_HN_MARKUP,
 	FULL_BRIEF_MARKUP,
 } from "./markup";
+import { readUsage, RateWindow, Usage } from "./usage";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 
@@ -31,13 +32,89 @@ const MARKUP: Record<ViewState, string> = {
 	"full-brief": FULL_BRIEF_MARKUP,
 };
 
+/** One calibration sample: weighted tokens measured at a known authoritative %.
+ *  Their ratio implies a token cap; the running median across samples is the
+ *  self-calibrating ballpark for "100%". */
+interface CalibrationSample {
+	t: number; // weighted tokens
+	p: number; // authoritative percentage
+}
+
 interface AgenticOSSettings {
 	openOnStartup: boolean;
+	/** Which rate-limit window the panel tracks. */
+	window: RateWindow;
+	/** (tokens, %) samples per window — the 5h and 7d caps are distinct ceilings,
+	 *  so their calibration histories must not mix. */
+	calibration: Record<RateWindow, CalibrationSample[]>;
 }
 
 const DEFAULT_SETTINGS: AgenticOSSettings = {
 	openOnStartup: false,
+	window: "five_hour",
+	calibration: { five_hour: [], seven_day: [] },
 };
+
+/** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
+ *  events repaint on demand, so this only has to keep an idle pane current. */
+const TOKEN_BURN_INTERVAL_MS = 60_000;
+
+/** Per-window length (for aligning the token sum to the snapshot's window) and
+ *  display label. Lengths are fixed by Anthropic's limits, not user-tunable. */
+const WINDOWS: Record<RateWindow, { hours: number; label: string }> = {
+	five_hour: { hours: 5, label: "5H Window" },
+	seven_day: { hours: 168, label: "7D Window" },
+};
+
+/** Below this percentage, integer rounding makes tokens÷pct too noisy to trust
+ *  as a calibration point, so the sample is skipped. */
+const MIN_CALIBRATION_PCT = 5;
+
+/** Cap on retained samples — newest win, keeping the estimate current. */
+const MAX_SAMPLES = 60;
+
+/** 312510 → "312.51K", 2_000_000 → "2.00M". Sub-1K values render as-is. */
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+	if (n >= 1_000) return (n / 1_000).toFixed(2) + "K";
+	return String(Math.round(n));
+}
+
+/** "last pull" age from a timestamp. */
+function formatAge(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 60) return s + "s ago";
+	const m = Math.round(s / 60);
+	if (m < 60) return m + "m ago";
+	const h = Math.round(m / 60);
+	return h + "h ago";
+}
+
+/** Reset countdown, e.g. "5d 3h left" / "4h 12m left" / "37m left". */
+function formatCountdown(ms: number): string {
+	if (ms <= 0) return "resetting…";
+	const totalMin = Math.round(ms / 60_000);
+	const d = Math.floor(totalMin / 1440);
+	const h = Math.floor((totalMin % 1440) / 60);
+	const m = totalMin % 60;
+	if (d > 0) return d + "d " + h + "h left";
+	if (h > 0) return h + "h " + m + "m left";
+	return m + "m left";
+}
+
+/** Implied 100% token cap = median of tokens÷(pct/100) across samples. Falls
+ *  back to the single live reading when no samples have accrued yet. */
+function estimateCap(samples: CalibrationSample[], live: Usage): number | null {
+	const caps = samples.map((s) => s.t / (s.p / 100)).sort((a, b) => a - b);
+	if (caps.length > 0) {
+		const mid = Math.floor(caps.length / 2);
+		return caps.length % 2 ? caps[mid] : (caps[mid - 1] + caps[mid]) / 2;
+	}
+	if (live.pct && live.pct > 0 && live.measuredTokens > 0) {
+		return live.measuredTokens / (live.pct / 100);
+	}
+	return null;
+}
 
 class AgenticOSView extends ItemView {
 	private root: HTMLElement | null = null;
@@ -46,8 +123,10 @@ class AgenticOSView extends ItemView {
 	private activeTab = "panel-overview";
 	/** Per-render listener removers, flushed on every re-render and on close. */
 	private cleanups: Array<() => void> = [];
+	/** Guards against an in-flight async read painting into a stale render. */
+	private burnToken = 0;
 
-	constructor(leaf: WorkspaceLeaf) {
+	constructor(leaf: WorkspaceLeaf, private plugin: AgenticOSPlugin) {
 		super(leaf);
 	}
 
@@ -68,6 +147,17 @@ class AgenticOSView extends ItemView {
 		// .agentic-os is the scoping root every selector in styles.css hangs off.
 		this.root = this.contentEl.createDiv({ cls: "agentic-os" });
 		this.render();
+
+		// Steady background heartbeat (auto-cleared on view unload)...
+		this.registerInterval(
+			window.setInterval(() => void this.refreshTokenBurn(), TOKEN_BURN_INTERVAL_MS),
+		);
+		// ...plus an instant repaint whenever this pane becomes the active leaf.
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				if (leaf === this.leaf) void this.refreshTokenBurn();
+			}),
+		);
 	}
 
 	async onClose(): Promise<void> {
@@ -100,9 +190,83 @@ class AgenticOSView extends ItemView {
 		this.root.innerHTML = MARKUP[this.state];
 		if (this.state === "dashboard") {
 			this.wireDashboard(this.root);
+			void this.refreshTokenBurn();
 		} else {
 			this.wireFullView(this.root);
 		}
+	}
+
+	/** Read the authoritative snapshot (+ aligned token estimate), feed the
+	 *  calibration, and paint the panel. No-op unless the dashboard is rendered. */
+	async refreshTokenBurn(): Promise<void> {
+		if (!this.root || this.state !== "dashboard") return;
+		const ticket = ++this.burnToken;
+
+		const win = this.plugin.settings.window;
+		const usage = await readUsage(win, WINDOWS[win].hours);
+
+		// Bail if a re-render or newer refresh superseded us mid-read.
+		if (!this.root || ticket !== this.burnToken) return;
+
+		const cap = await this.plugin.updateCalibration(usage);
+		this.paintTokenBurn(this.root, usage, cap, win);
+	}
+
+	private paintTokenBurn(root: HTMLElement, usage: Usage, cap: number | null, win: RateWindow): void {
+		const hero = root.querySelector<HTMLElement>(".token-hero");
+		if (!hero) return;
+
+		// Only the window portion is dynamic; "Token Burn" is a static gradient span.
+		const labelNode = hero.querySelector(".micro-label__text");
+		if (labelNode) labelNode.textContent = " · " + WINDOWS[win].label + " · ";
+
+		const set = (sel: string, text: string): void => {
+			const el = hero.querySelector(sel);
+			if (el) el.textContent = text;
+		};
+		// The "%" glyph is a child span, so only the leading text node is replaced.
+		const setPct = (text: string): void => {
+			const node = hero.querySelector(".token-hero__pct")?.firstChild;
+			if (node) node.nodeValue = text;
+		};
+		const setFill = (width: string): void => {
+			const el = hero.querySelector<HTMLElement>(".meter__fill");
+			if (el) el.style.width = width;
+		};
+
+		// Snapshot unreachable, or present but missing a percentage — degrade.
+		if (!usage.ok || usage.pct === null) {
+			set(".token-hero__pull", "no data");
+			setPct("0");
+			setFill("0%");
+			set(".token-hero__value", "—");
+			set(".token-hero__sub:not(.token-hero__sub--proj)", "/ —");
+			set(".token-hero__sub--proj", "");
+			return;
+		}
+
+		// Percentage + meter come straight from the authoritative snapshot.
+		setPct(String(Math.round(usage.pct)));
+		setFill(Math.min(usage.pct, 100) + "%");
+		set(
+			".token-hero__pull",
+			usage.snapshotTs === null ? "live" : "last pull " + formatAge(Date.now() - usage.snapshotTs * 1000),
+		);
+
+		// Meter now reads as a percentage, so ticks are 0–100%.
+		const ticks = hero.querySelectorAll<HTMLElement>(".meter__ticks span");
+		ticks.forEach((tick, i) => {
+			const frac = (i / (ticks.length - 1)) * 100;
+			tick.textContent = i === 0 ? "0" : Math.round(frac) + "%";
+		});
+
+		// Token figures are estimates (≈), aligned to the snapshot's window.
+		set(".token-hero__value", formatTokens(usage.measuredTokens));
+		set(".token-hero__sub:not(.token-hero__sub--proj)", cap === null ? "/ ?" : "/ " + formatTokens(cap));
+		set(
+			".token-hero__sub--proj",
+			usage.resetsAt === null ? "" : "↺ " + formatCountdown(usage.resetsAt * 1000 - Date.now()),
+		);
 	}
 
 	/** Tab switching + "Full ↗" navigation for the main dashboard. */
@@ -159,7 +323,7 @@ export default class AgenticOSPlugin extends Plugin {
 
 		addIcon(AGENTIC_OS_ICON_ID, AGENTIC_OS_ICON_SVG);
 
-		this.registerView(VIEW_TYPE_AGENTIC_OS, (leaf) => new AgenticOSView(leaf));
+		this.registerView(VIEW_TYPE_AGENTIC_OS, (leaf) => new AgenticOSView(leaf, this));
 
 		this.addRibbonIcon(AGENTIC_OS_ICON_ID, "Open Agentic OS", () => {
 			void this.activateView();
@@ -231,10 +395,61 @@ export default class AgenticOSPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+		const stored = this.settings as unknown as Record<string, unknown>;
+		let dirty = false;
+
+		// Drop keys from earlier versions (manual budget/window, since superseded
+		// by the snapshot + self-calibration) so they don't linger in data.json.
+		for (const key of ["tokenBudget", "windowHours"]) {
+			if (key in stored) {
+				delete stored[key];
+				dirty = true;
+			}
+		}
+
+		// Migrate the original flat calibration array → per-window, and ensure both
+		// window buckets exist regardless of how old the stored shape is.
+		const cal = stored.calibration as any;
+		const asList = (v: any): CalibrationSample[] => (Array.isArray(v) ? v : []);
+		const migrated = {
+			five_hour: asList(Array.isArray(cal) ? cal : cal?.five_hour),
+			seven_day: asList(cal?.seven_day),
+		};
+		if (Array.isArray(cal) || !cal?.five_hour || !cal?.seven_day) dirty = true;
+		this.settings.calibration = migrated;
+
+		if (dirty) await this.saveSettings();
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	/** Fold the latest reading into the calibration history and return the current
+	 *  token-cap estimate. A sample is recorded only when the percentage is high
+	 *  enough to be meaningful and has moved since the last sample (the integer %
+	 *  steps up as you burn), so refreshes don't spam duplicates. */
+	async updateCalibration(usage: Usage): Promise<number | null> {
+		const samples = this.settings.calibration[this.settings.window];
+		const eligible =
+			usage.ok && usage.pct !== null && usage.pct >= MIN_CALIBRATION_PCT && usage.measuredTokens > 0;
+
+		if (eligible && samples[samples.length - 1]?.p !== usage.pct) {
+			samples.push({ t: usage.measuredTokens, p: usage.pct as number });
+			if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
+			await this.saveSettings();
+		}
+
+		return estimateCap(samples, usage);
+	}
+
+	/** Repaint the panel in every open view — used after a window switch. */
+	repaintTokenBurn(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENTIC_OS)) {
+			const view = leaf.view;
+			if (view instanceof AgenticOSView) void view.refreshTokenBurn();
+		}
 	}
 }
 
@@ -259,6 +474,21 @@ class AgenticOSSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.openOnStartup = value;
 						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Rate-limit window")
+			.setDesc("Which usage window the Token Burn panel tracks. Each keeps its own cap calibration.")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("five_hour", "5 hours")
+					.addOption("seven_day", "7 days")
+					.setValue(this.plugin.settings.window)
+					.onChange(async (value) => {
+						this.plugin.settings.window = value as RateWindow;
+						await this.plugin.saveSettings();
+						this.plugin.repaintTokenBurn();
 					})
 			);
 	}

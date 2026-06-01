@@ -7,6 +7,7 @@ import {
 } from "./markup";
 import { readUsage, RateWindow, Usage } from "./usage";
 import { readGitHubStats, GitHubStats, readProjectStats, ProjectStats, ProjectRepo } from "./github";
+import { readLatestSession, LatestSession } from "./session";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 
@@ -98,6 +99,17 @@ function formatAge(ms: number): string {
 	return h + "h ago";
 }
 
+/** Session age, e.g. "11h old" / "23m old" / "2d old"; sub-minute reads "just now". */
+function formatSessionAge(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 60) return "just now";
+	const m = Math.round(s / 60);
+	if (m < 60) return m + "m old";
+	const h = Math.round(m / 60);
+	if (h < 24) return h + "h old";
+	return Math.round(h / 24) + "d old";
+}
+
 /** Reset countdown, e.g. "5d 3h left" / "4h 12m left" / "37m left". */
 function formatCountdown(ms: number): string {
 	if (ms <= 0) return "resetting…";
@@ -135,6 +147,8 @@ class AgenticOSView extends ItemView {
 	private burnToken = 0;
 	/** Same stale-paint guard for the (slower) GitHub fetch. */
 	private ghToken = 0;
+	/** Stale-paint guard for the Latest Session card. */
+	private sessionToken = 0;
 	/** Stale-paint guard for the Projects tab (heaviest fetch — commit history). */
 	private projectsToken = 0;
 	/** Projects data is fetched lazily on first tab view, then kept fresh. */
@@ -164,7 +178,10 @@ class AgenticOSView extends ItemView {
 
 		// Steady background heartbeats (auto-cleared on view unload)...
 		this.registerInterval(
-			window.setInterval(() => void this.refreshTokenBurn(), TOKEN_BURN_INTERVAL_MS),
+			window.setInterval(() => {
+				void this.refreshTokenBurn();
+				void this.refreshLatestSession();
+			}, TOKEN_BURN_INTERVAL_MS),
 		);
 		this.registerInterval(
 			window.setInterval(() => {
@@ -177,6 +194,7 @@ class AgenticOSView extends ItemView {
 			this.app.workspace.on("active-leaf-change", (leaf) => {
 				if (leaf !== this.leaf) return;
 				void this.refreshTokenBurn();
+				void this.refreshLatestSession();
 				void this.refreshGitHub();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 			}),
@@ -214,6 +232,7 @@ class AgenticOSView extends ItemView {
 		if (this.state === "dashboard") {
 			this.wireDashboard(this.root);
 			void this.refreshTokenBurn();
+			void this.refreshLatestSession();
 			void this.refreshGitHub();
 			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
@@ -362,6 +381,62 @@ class AgenticOSView extends ItemView {
 		else deltaEl.insertBefore(document.createTextNode(lead), deltaEl.firstChild);
 		const sub = deltaEl.querySelector<HTMLElement>(".stat-card__sub");
 		if (sub) sub.textContent = label;
+	}
+
+	/** Read the most recent Claude Code session from disk and paint the card. No-op
+	 *  unless the dashboard is rendered; guarded against stale paints like burn. */
+	async refreshLatestSession(): Promise<void> {
+		if (!this.root || this.state !== "dashboard") return;
+		const ticket = ++this.sessionToken;
+
+		const session = await readLatestSession();
+
+		if (!this.root || ticket !== this.sessionToken) return;
+		this.paintLatestSession(this.root, session);
+	}
+
+	private paintLatestSession(root: HTMLElement, s: LatestSession): void {
+		const card = root.querySelector<HTMLElement>(".latest-session");
+		if (!card) return;
+
+		// Age line: keep the leading status-dot span, replace only its trailing text.
+		const ageEl = card.querySelector<HTMLElement>(".latest-session__age");
+		if (ageEl) {
+			const ageText = s.ok && s.lastTs !== null ? formatSessionAge(Date.now() - s.lastTs) : "no data";
+			const last = ageEl.lastChild;
+			if (last && last.nodeType === Node.TEXT_NODE) last.nodeValue = ageText;
+			else ageEl.appendChild(document.createTextNode(ageText));
+		}
+
+		const title = card.querySelector<HTMLElement>(".latest-session__title");
+		if (title) title.textContent = s.ok ? (s.title ?? "Untitled session") : "No recent session";
+
+		// Three stat slots in DOM order: messages, tokens, tool calls.
+		const stats = card.querySelectorAll<HTMLElement>(".latest-session__stats > span > b");
+		if (stats.length >= 3) {
+			stats[0].textContent = s.ok ? s.messages.toLocaleString("en-US") : "—";
+			stats[1].textContent = s.ok ? formatTokens(s.tokens) : "—";
+			stats[2].textContent = s.ok ? s.toolCalls.toLocaleString("en-US") : "—";
+		}
+
+		// Meta row: model badge, then branch + cwd chips. Hide any with no value.
+		const badge = card.querySelector<HTMLElement>(".latest-session__meta .badge");
+		if (badge) {
+			badge.style.display = s.model ? "" : "none";
+			if (s.model) badge.textContent = s.model;
+		}
+		// Each chip is "<glyph> <text>" — preserve the leading glyph, swap the text.
+		const setChip = (chip: HTMLElement | null, value: string | null): void => {
+			if (!chip) return;
+			chip.style.display = value ? "" : "none";
+			if (!value) return;
+			const cur = chip.textContent ?? "";
+			const sp = cur.indexOf(" ");
+			chip.textContent = (sp >= 0 ? cur.slice(0, sp + 1) : "") + value;
+		};
+		const chips = card.querySelectorAll<HTMLElement>(".latest-session__meta .chip");
+		setChip(chips[0] ?? null, s.ok ? s.branch : null);
+		setChip(chips[1] ?? null, s.ok ? s.cwd : null);
 	}
 
 	/** Fetch + paint the Projects ("GitHub Activity") tab. Heaviest read (per-repo

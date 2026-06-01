@@ -294,6 +294,62 @@ function relAge(ms: number): string {
 	return `${Math.max(1, Math.floor(s / 60_000))}m ago`;
 }
 
+/** Top 3 owned repos by most recent push → repo cards. Commit count comes from
+ *  the default branch's `history.totalCount` (one GraphQL field), so the same
+ *  numbers back both the full stats fetch and the light repos-only refresh. */
+function buildRepoCards(repoNodes: any[], now: number): ProjectRepo[] {
+	return repoNodes
+		.slice()
+		.sort((a, b) => (String(a.pushedAt) < String(b.pushedAt) ? 1 : -1))
+		.slice(0, 3)
+		.map((r) => {
+			const lang = r.primaryLanguage?.name ?? null;
+			return {
+				name: r.name,
+				desc: r.description || "",
+				lang,
+				langColor: lang ? (LANG_COLORS[lang] ?? LANG_FALLBACK) : LANG_FALLBACK,
+				stars: r.stargazerCount ?? 0,
+				updated: r.pushedAt ? relAge(now - Date.parse(r.pushedAt)) : "",
+				commits: r.defaultBranchRef?.target?.history?.totalCount ?? 0,
+				openPRs: r.pullRequests?.totalCount ?? 0,
+				issues: r.issues?.totalCount ?? 0,
+			};
+		});
+}
+
+/** Repo cards only — the cheap subset of the Projects tab (one GraphQL call, no
+ *  per-repo commit pagination). Used to refresh just the repo grid when the tab
+ *  is opened, leaving the heavier stats on their slower timer. Null on failure. */
+export async function readProjectRepos(username: string): Promise<ProjectRepo[] | null> {
+	let login = username.trim();
+	if (!login) {
+		try {
+			login = JSON.parse(await runGh(["api", "user"])).login;
+		} catch {
+			return null;
+		}
+	}
+	if (!login) return null;
+
+	const now = Date.now();
+	const since = new Date(now - 365 * DAY_MS).toISOString();
+	const query =
+		`query($l:String!,$since:GitTimestamp!){user(login:$l){` +
+		`repositories(first:100,ownerAffiliations:OWNER,isFork:false){nodes{` +
+		`name description primaryLanguage{name} stargazerCount pushedAt ` +
+		`issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount} ` +
+		`defaultBranchRef{target{... on Commit{history(since:$since){totalCount}}}}}}}}`;
+	try {
+		const nodes = JSON.parse(
+			await runGh(["api", "graphql", "-f", `query=${query}`, "-f", `l=${login}`, "-f", `since=${since}`]),
+		)?.data?.user?.repositories?.nodes;
+		return Array.isArray(nodes) ? buildRepoCards(nodes, now) : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function readProjectStats(username: string): Promise<ProjectStats> {
 	const empty: ProjectStats = {
 		ok: false, months: [], totalThisYear: 0, yearDeltaPct: null, rangeLabel: "",
@@ -319,17 +375,18 @@ export async function readProjectStats(username: string): Promise<ProjectStats> 
 
 	// One call: calendar + prior-year total + repo meta + languages + releases.
 	const query =
-		`query($l:String!,$pf:DateTime!,$pt:DateTime!){user(login:$l){` +
+		`query($l:String!,$pf:DateTime!,$pt:DateTime!,$since:GitTimestamp!){user(login:$l){` +
 		`cur:contributionsCollection{contributionCalendar{totalContributions weeks{contributionDays{date contributionCount}}}}` +
 		`prev:contributionsCollection(from:$pf,to:$pt){contributionCalendar{totalContributions}}` +
 		`repositories(first:100,ownerAffiliations:OWNER,isFork:false){nodes{` +
 		`name description primaryLanguage{name} stargazerCount pushedAt ` +
 		`issues(states:OPEN){totalCount} pullRequests(states:OPEN){totalCount} ` +
+		`defaultBranchRef{target{... on Commit{history(since:$since){totalCount}}}} ` +
 		`languages(first:8){edges{size node{name}}} releases(last:1){nodes{tagName name publishedAt}}}}}}`;
 	let user: any;
 	try {
 		user = JSON.parse(
-			await runGh(["api", "graphql", "-f", `query=${query}`, "-f", `l=${login}`, "-f", `pf=${prevFrom}`, "-f", `pt=${prevTo}`]),
+			await runGh(["api", "graphql", "-f", `query=${query}`, "-f", `l=${login}`, "-f", `pf=${prevFrom}`, "-f", `pt=${prevTo}`, "-f", `since=${yearAgo}`]),
 		)?.data?.user;
 	} catch {
 		return empty;
@@ -430,24 +487,7 @@ export async function readProjectStats(username: string): Promise<ProjectStats> 
 	const heat = heatCount.map((row) => row.map((c) => (c === 0 ? 0 : Math.max(1, Math.round((c / maxCell) * 4)))));
 
 	// Top 3 repos by most recent push.
-	const repos: ProjectRepo[] = repoNodes
-		.map((r, i) => ({ r, commits: commitsPerRepo[i].length }))
-		.sort((a, b) => (String(a.r.pushedAt) < String(b.r.pushedAt) ? 1 : -1))
-		.slice(0, 3)
-		.map(({ r, commits }) => {
-			const lang = r.primaryLanguage?.name ?? null;
-			return {
-				name: r.name,
-				desc: r.description || "",
-				lang,
-				langColor: lang ? (LANG_COLORS[lang] ?? LANG_FALLBACK) : LANG_FALLBACK,
-				stars: r.stargazerCount ?? 0,
-				updated: r.pushedAt ? relAge(now - Date.parse(r.pushedAt)) : "",
-				commits,
-				openPRs: r.pullRequests?.totalCount ?? 0,
-				issues: r.issues?.totalCount ?? 0,
-			};
-		});
+	const repos: ProjectRepo[] = buildRepoCards(repoNodes, now);
 
 	// Aggregate language bytes across all repos → top 5 + Other.
 	const langBytes = new Map<string, number>();

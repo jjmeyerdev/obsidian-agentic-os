@@ -315,6 +315,34 @@
   padding: 0;
 }
 
+/* Projects tab skeleton — on the first tab view the heavy gh fetch (per-repo
+   commit history) takes a few seconds; #panel-projects gets .is-loading meanwhile
+   so the markup's placeholder data never flashes. Each card's real content is
+   hidden and replaced by a pulsing sheen, so every card/stat/repo reads as its
+   own shimmer block until live data paints in. */
+.agentic-os #panel-projects.is-loading .card {
+  position: relative;
+  overflow: hidden;
+}
+.agentic-os #panel-projects.is-loading .card > * {
+  visibility: hidden;
+}
+.agentic-os #panel-projects.is-loading .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, transparent 0%, var(--accent-soft) 50%, transparent 100%),
+    var(--inset);
+  background-size: 220% 100%, 100% 100%;
+  animation: ao-skeleton 1.4s ease-in-out infinite;
+}
+@keyframes ao-skeleton {
+  0%   { background-position: 150% 0, 0 0; }
+  100% { background-position: -50% 0, 0 0; }
+}
+
 /* ============================================================================
    SHARED PRIMITIVES  —  used across Screen 1 components
    ========================================================================== */

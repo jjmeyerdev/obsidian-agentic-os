@@ -25,6 +25,8 @@
   --accent-grad:      linear-gradient(90deg,#0E7C8C 0%,#22D3EE 60%,#7DEBF7 100%);
   /* cyan flame: deep teal root → cyan → electric → white-hot tip */
   --flame-grad:       linear-gradient(90deg,#06363F 0%,#0E8597 32%,#22D3EE 62%,#5BE9F7 84%,#DDFBFF 100%);
+  /* same flame, vertical: white-hot tip on top → deep teal root at base */
+  --flame-grad-v:     linear-gradient(180deg,#DDFBFF 0%,#5BE9F7 16%,#22D3EE 38%,#0E8597 68%,#06363F 100%);
 
   --positive:         #34D399;
   --negative:         #F87171;
@@ -329,6 +331,32 @@
 }
 .agentic-os .micro-label--accent { color: var(--accent); }
 .agentic-os .micro-label__live   { color: var(--positive); }
+.agentic-os .micro-label__flame {
+  width: 11px;
+  height: 11px;
+  vertical-align: -1.5px;
+  margin-right: 4px;
+  /* subtle ember glow in the flame gradient's electric-cyan */
+  animation: flame-glow 2.6s ease-in-out infinite;
+}
+@keyframes flame-glow {
+  0%, 100% { filter: drop-shadow(0 0 1.5px rgba(34,211,238,0.40)); }
+  50%      { filter: drop-shadow(0 0 3.5px rgba(34,211,238,0.70)); }
+}
+/* "Token Burn" painted with the flame gradient + the same ember glow */
+.agentic-os .micro-label__brand {
+  background: var(--flame-grad-v);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: flame-glow 2.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agentic-os .micro-label__flame,
+  .agentic-os .micro-label__brand { animation: none; }
+  .agentic-os .micro-label__flame { filter: drop-shadow(0 0 2px rgba(34,211,238,0.5)); }
+}
 .agentic-os .live-dot {
   color: var(--positive);
   animation: ao-live-pulse var(--tick-live) ease-in-out infinite;

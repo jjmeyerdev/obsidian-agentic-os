@@ -46,7 +46,7 @@ export const DASHBOARD_MARKUP = `<div class="dash" role="region" aria-label="Age
         <!-- ① TOKEN BURN ───────────────────────────────────────── -->
         <section class="card token-hero" aria-label="Token burn">
           <div class="token-hero__top">
-            <span class="micro-label">$ Token Burn · 5H Window · <span class="micro-label__live"><span class="live-dot">●</span> Live</span></span>
+            <span class="micro-label"><svg class="micro-label__flame" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><defs><linearGradient id="ao-flame-grad" x1="0" y1="24" x2="0" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#06363F"/><stop offset=".32" stop-color="#0E8597"/><stop offset=".62" stop-color="#22D3EE"/><stop offset=".84" stop-color="#5BE9F7"/><stop offset="1" stop-color="#DDFBFF"/></linearGradient></defs><path stroke="url(#ao-flame-grad)" d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg><span class="micro-label__brand">Token Burn</span><span class="micro-label__text"> · 5H Window · </span><span class="micro-label__live"><span class="live-dot">●</span> Live</span></span>
             <span class="token-hero__pull">last pull 6m ago</span>
           </div>
 

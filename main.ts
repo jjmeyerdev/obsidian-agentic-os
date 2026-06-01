@@ -6,7 +6,7 @@ import {
 	FULL_BRIEF_MARKUP,
 } from "./markup";
 import { readUsage, RateWindow, Usage } from "./usage";
-import { readGitHubStats, GitHubStats, readProjectStats, ProjectStats, ProjectRepo } from "./github";
+import { readGitHubStats, GitHubStats, readProjectStats, readProjectRepos, ProjectStats, ProjectRepo } from "./github";
 import { readLatestSession, LatestSession } from "./session";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
@@ -151,6 +151,8 @@ class AgenticOSView extends ItemView {
 	private sessionToken = 0;
 	/** Stale-paint guard for the Projects tab (heaviest fetch — commit history). */
 	private projectsToken = 0;
+	/** Stale-paint guard for the light repos-only refresh (on tab open). */
+	private reposToken = 0;
 	/** Projects data is fetched lazily on first tab view, then kept fresh. */
 	private projectsLoaded = false;
 
@@ -459,6 +461,20 @@ class AgenticOSView extends ItemView {
 		if (firstLoad) this.setProjectsLoading(false);
 	}
 
+	/** Repaint just the repo cards from the cheap GraphQL-only fetch — fired when
+	 *  the Projects tab is opened so they stay current, while the heavier panel
+	 *  stats keep to their slower interval. No-op if gh is unreachable. */
+	async refreshProjectRepos(): Promise<void> {
+		if (!this.root || this.state !== "dashboard") return;
+		const ticket = ++this.reposToken;
+
+		const repos = await readProjectRepos(this.plugin.settings.githubUsername);
+
+		if (!this.root || ticket !== this.reposToken || !repos) return;
+		const panel = this.root.querySelector<HTMLElement>("#panel-projects");
+		if (panel) this.paintRepoCards(panel, repos);
+	}
+
 	/** Toggle the first-load shimmer skeleton on the Projects panel. */
 	private setProjectsLoading(on: boolean): void {
 		this.root?.querySelector<HTMLElement>("#panel-projects")?.classList.toggle("is-loading", on);
@@ -474,7 +490,7 @@ class AgenticOSView extends ItemView {
 		if (!panel) return;
 		this.paintContribChart(panel, s);
 		this.paintGhStats(panel, s);
-		this.paintRepoCards(panel, s);
+		this.paintRepoCards(panel, s.repos);
 		this.paintLangBreakdown(panel, s);
 		this.paintReleases(panel, s);
 		this.paintHeatmap(panel, s);
@@ -537,10 +553,10 @@ class AgenticOSView extends ItemView {
 		setText(peak, ".gh-stat-card__sub", s.peakTimeLabel ? `Peak: ${s.peakTimeLabel}` : "no commits yet");
 	}
 
-	private paintRepoCards(panel: HTMLElement, s: ProjectStats): void {
+	private paintRepoCards(panel: HTMLElement, repos: ProjectRepo[]): void {
 		const grid = panel.querySelector<HTMLElement>(".gh-repo-grid");
-		if (!grid || s.repos.length === 0) return;
-		grid.innerHTML = s.repos.map((r) => this.repoCardHtml(r)).join("");
+		if (!grid || repos.length === 0) return;
+		grid.innerHTML = repos.map((r) => this.repoCardHtml(r)).join("");
 	}
 
 	private repoCardHtml(r: ProjectRepo): string {
@@ -619,8 +635,12 @@ class AgenticOSView extends ItemView {
 			for (const p of panels) {
 				p.toggleAttribute("hidden", p.id !== target);
 			}
-			// Projects fetch is heavy (commit history), so defer it until first viewed.
-			if (target === "panel-projects" && !this.projectsLoaded) void this.refreshProjects();
+			// Projects fetch is heavy (commit history), so defer the full load until
+			// first viewed; on later opens refresh just the repo cards (cheap fetch).
+			if (target === "panel-projects") {
+				if (!this.projectsLoaded) void this.refreshProjects();
+				else void this.refreshProjectRepos();
+			}
 		};
 
 		for (const tab of tabs) {

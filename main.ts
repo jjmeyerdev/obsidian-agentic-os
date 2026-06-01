@@ -1,4 +1,4 @@
-import { addIcon, App, ItemView, Modal, normalizePath, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import { addIcon, App, ItemView, Modal, normalizePath, Notice, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import {
 	DASHBOARD_MARKUP,
 	FULL_SESSIONS_MARKUP,
@@ -74,6 +74,10 @@ interface AgenticOSSettings {
 	 *  paths. One group per line, comma-separated folder paths within a line; blank =
 	 *  off (each folder's sessions stay separate). Machine-specific, hence a setting. */
 	sessionFolderGroups: string;
+	/** Quick Action button wiring: one `Button Label = command-id` per line, mapping a
+	 *  dashboard button to an Obsidian command (e.g. a Shell Commands command) it runs
+	 *  on click. Vault-specific command IDs, hence a setting. */
+	quickActions: string;
 }
 
 const DEFAULT_SETTINGS: AgenticOSSettings = {
@@ -82,6 +86,7 @@ const DEFAULT_SETTINGS: AgenticOSSettings = {
 	calibration: { five_hour: [], seven_day: [] },
 	githubUsername: "",
 	sessionFolderGroups: "",
+	quickActions: "",
 };
 
 /** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
@@ -145,6 +150,23 @@ function parseFolderGroups(raw: string): string[][] {
 				.map((p) => (p.includes("/") ? encodeProjectDir(p) : p)),
 		)
 		.filter((g) => g.length > 1);
+}
+
+/** Parse the Quick Actions map: one `Button Label = command-id` per line. Blank lines
+ *  and `#` comments are ignored. The label must match the button's visible text
+ *  exactly (e.g. "Deep Research…" includes the ellipsis). Splits on the first `=`. */
+function parseQuickActions(raw: string): Map<string, string> {
+	const map = new Map<string, string>();
+	for (const line of raw.split("\n")) {
+		const t = line.trim();
+		if (!t || t.startsWith("#")) continue;
+		const eq = t.indexOf("=");
+		if (eq < 0) continue;
+		const label = t.slice(0, eq).trim();
+		const cmd = t.slice(eq + 1).trim();
+		if (label && cmd) map.set(label, cmd);
+	}
+	return map;
 }
 
 /** Session age, e.g. "11h old" / "23m old" / "2d old"; sub-minute reads "just now". */
@@ -856,6 +878,29 @@ class AgenticOSView extends ItemView {
 				this.navigate(target);
 			});
 		}
+
+		this.wireQuickActions(root);
+	}
+
+	/** Each Quick Action button runs the Obsidian command (typically a Shell Commands
+	 *  command) mapped to its label in settings. The map is parsed at click time so
+	 *  settings edits take effect without a re-render; unmapped buttons say so. */
+	private wireQuickActions(root: HTMLElement): void {
+		for (const btn of Array.from(root.querySelectorAll<HTMLButtonElement>(".quick-action"))) {
+			const label = (btn.textContent ?? "").trim();
+			this.on(btn, "click", () => {
+				const id = parseQuickActions(this.plugin.settings.quickActions).get(label);
+				if (!id) {
+					new Notice(`No command mapped for "${label}". Add one in Agentic OS settings.`);
+					return;
+				}
+				// app.commands is Obsidian's internal command API (untyped) — the same
+				// call Meta Bind's `type: command` action uses. Returns false if the
+				// command isn't found (e.g. Shell Commands not installed / wrong ID).
+				const ok = (this.app as any).commands?.executeCommandById(id);
+				if (!ok) new Notice(`Command not found: ${id} — check Agentic OS settings.`);
+			});
+		}
 	}
 
 	/** Back button returns a full view to the dashboard. */
@@ -1269,5 +1314,28 @@ class AgenticOSSettingTab extends PluginSettingTab {
 				}).open();
 			}),
 		);
+
+		new Setting(containerEl)
+			.setName("Quick actions")
+			.setDesc(
+				"Wire the dashboard Quick Action buttons to commands (e.g. Shell Commands). One " +
+					"'Button Label = command-id' per line; the label must match the button text exactly. " +
+					"Labels: Plan Today, Plan Tomorrow, Morning Brief, Inbox Brief, Deep Research…, " +
+					"Atomize…, Reading Pipeline, Weekly Review, Vault Cleanup, Pull Metrics.",
+			);
+
+		// Full-width textarea below the row, matching the merge-folders editor above.
+		const qa = containerEl.createEl("textarea");
+		qa.value = this.plugin.settings.quickActions;
+		qa.placeholder = "Plan Today = obsidian-shellcommands:shell-command-2h6af961p2";
+		qa.rows = 6;
+		qa.style.width = "100%";
+		qa.style.fontFamily = "var(--font-monospace)";
+		qa.style.fontSize = "12px";
+		qa.style.marginBottom = "var(--size-4-4)";
+		qa.addEventListener("input", async () => {
+			this.plugin.settings.quickActions = qa.value;
+			await this.plugin.saveSettings();
+		});
 	}
 }

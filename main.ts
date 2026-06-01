@@ -1,4 +1,4 @@
-import { addIcon, App, ItemView, Plugin, PluginSettingTab, Setting, WorkspaceLeaf } from "obsidian";
+import { addIcon, App, ItemView, normalizePath, Plugin, PluginSettingTab, Setting, WorkspaceLeaf } from "obsidian";
 import {
 	DASHBOARD_MARKUP,
 	FULL_RADAR_MARKUP,
@@ -155,6 +155,8 @@ export default class AgenticOSPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
+		this.injectFonts();
+
 		addIcon(AGENTIC_OS_ICON_ID, AGENTIC_OS_ICON_SVG);
 
 		this.registerView(VIEW_TYPE_AGENTIC_OS, (leaf) => new AgenticOSView(leaf));
@@ -178,6 +180,38 @@ export default class AgenticOSPlugin extends Plugin {
 				void this.activateView();
 			});
 		}
+	}
+
+	/** Register the bundled @font-face declarations at runtime.
+	 *  Obsidian injects a plugin's styles.css into the document head, where relative
+	 *  url() paths don't resolve — so the fonts must be loaded from a real resource
+	 *  path (app://...) resolved via the adapter, not from CSS. */
+	private injectFonts(): void {
+		const dir = this.manifest.dir;
+		if (!dir) return;
+
+		const faces: Array<[string, number, string]> = [
+			["JetBrains Mono", 400, "JetBrainsMono-Regular.woff2"],
+			["JetBrains Mono", 500, "JetBrainsMono-Medium.woff2"],
+			["JetBrains Mono", 600, "JetBrainsMono-SemiBold.woff2"],
+			["JetBrains Mono", 700, "JetBrainsMono-Bold.woff2"],
+			["Space Grotesk", 400, "SpaceGrotesk-Regular.woff2"],
+			["Space Grotesk", 500, "SpaceGrotesk-Medium.woff2"],
+			["Space Grotesk", 600, "SpaceGrotesk-SemiBold.woff2"],
+			["Space Grotesk", 700, "SpaceGrotesk-Bold.woff2"],
+		];
+
+		const rules = faces.map(([family, weight, file]) => {
+			const url = this.app.vault.adapter.getResourcePath(normalizePath(`${dir}/fonts/${file}`));
+			return `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};` +
+				`font-display:swap;src:url("${url}") format("woff2");}`;
+		});
+
+		const style = document.createElement("style");
+		style.id = "agentic-os-fonts";
+		style.textContent = rules.join("\n");
+		document.head.appendChild(style);
+		this.register(() => style.remove());
 	}
 
 	/** Open the dashboard in the main (center) area, or reveal it if already open. */

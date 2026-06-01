@@ -1,75 +1,4 @@
 /* ============================================================================
-   BUNDLED FONTS
-   woff2 files live in ./fonts (download URLs in fonts/README.md). If a file is
-   missing the UI falls back to the host sans-serif / monospace stack, so the
-   pane degrades gracefully.
-   ========================================================================== */
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/JetBrainsMono-Regular.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('fonts/JetBrainsMono-Medium.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('fonts/JetBrainsMono-SemiBold.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('fonts/JetBrainsMono-Bold.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Space Grotesk';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/SpaceGrotesk-Regular.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Space Grotesk';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('fonts/SpaceGrotesk-Medium.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Space Grotesk';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('fonts/SpaceGrotesk-SemiBold.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Space Grotesk';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('fonts/SpaceGrotesk-Bold.woff2') format('woff2');
-}
-
-
-/* ============================================================================
    AGENTIC OS — Command Center pane (Variant B · "Slate / Cyan")
    Shell scaffold. Everything is scoped under .agentic-os so it cannot leak
    into host Obsidian styles. Dark-only; no light fallback.
@@ -374,6 +303,14 @@
   border: var(--border) solid var(--border-hairline);
   border-radius: var(--radius);
   box-shadow: var(--shadow-raised);
+  /* Reset Obsidian core's .card (app.css) which leaks
+     display:flex/flex-direction:column/flex-grow/margin/padding into our scope.
+     Component rules below re-declare display/padding where they need it. */
+  display: block;
+  flex-direction: row;
+  flex-grow: 0;
+  margin: 0;
+  padding: 0;
 }
 
 /* ============================================================================

@@ -1,9 +1,9 @@
 # Bundled fonts
 
-`styles.css` references eight `.woff2` files in this folder via `@font-face`. They
-are **not** committed (binary). Download them once with the commands below — the
-left side is the source URL (Fontsource on jsDelivr), the right side is the local
-filename `styles.css` expects.
+The plugin registers eight `.woff2` files from this folder as `@font-face` at runtime
+(`injectFonts()` in `main.ts`, via `getResourcePath`). They are **not** committed
+(binary). Download them once with the commands below — the left side is the source URL
+(Fontsource on jsDelivr), the right side is the local filename the code expects.
 
 If a file is missing, the pane still works: it falls back to the host
 sans-serif / monospace stack.
@@ -26,9 +26,8 @@ curl -L -o SpaceGrotesk-Bold.woff2     https://cdn.jsdelivr.net/npm/@fontsource/
 
 Both families are licensed under the SIL Open Font License.
 
-> Note: Obsidian injects a plugin's `styles.css` into the document head, and
-> relative `url()` paths in injected CSS resolve against the app base, not the
-> plugin folder. On some setups the `@font-face` files may therefore not load
-> from the relative path; the design's fallback stack keeps it readable. If you
-> need the bundled weights guaranteed, register the faces at runtime using
-> `this.app.vault.adapter.getResourcePath(...)` instead.
+> Why runtime registration: Obsidian injects a plugin's `styles.css` into the document
+> head, where relative `url('fonts/...')` paths resolve against the app base (not the
+> plugin folder) and fail to load. `injectFonts()` in `main.ts` sidesteps this by
+> resolving each file through `app.vault.adapter.getResourcePath(...)` to a valid
+> `app://` URL, so `styles.css` itself carries no `@font-face`.

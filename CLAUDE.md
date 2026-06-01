@@ -77,19 +77,23 @@ the number of `.pill-link` buttons, the generator throws by design.
 - `activateView()` reveals an existing leaf if present rather than opening a duplicate.
 - One setting (`openOnStartup`, default off) opens the pane on `onLayoutReady`.
 
-**`styles.css` is derived, with a manual step.** It's the source design stylesheet
-with eight `@font-face` blocks prepended (JetBrains Mono + Space Grotesk, weights
-400/500/600/700, pointing at `fonts/*.woff2`). There is **no script** that
-regenerates it from the source — if the source design CSS changes, the prepend must
-be re-applied by hand. The fonts themselves are gitignored; download URLs are in
-`fonts/README.md`.
+**Fonts are loaded in code, not CSS.** `injectFonts()` (in `onload`) builds a
+`<style id="agentic-os-fonts">` with `@font-face` rules whose `src` is
+`app.vault.adapter.getResourcePath(`${this.manifest.dir}/fonts/<file>.woff2`)`.
+This is **required**: Obsidian injects a plugin's `styles.css` into the document head,
+where relative `url('fonts/...')` paths resolve against the app base (not the plugin
+folder) and silently fail (`document.fonts` shows them in `error` state, and the UI
+falls back to the default mono/sans). So `styles.css` deliberately contains **no**
+`@font-face` — don't re-add it there. The woff2 files are gitignored; download URLs
+are in `fonts/README.md`.
 
-**Obsidian font caveat:** Obsidian injects a plugin's `styles.css` into the document
-head, where relative `url()` paths resolve against the app base, not the plugin
-folder — so the bundled `@font-face` files may not load on every setup. The design's
-`sans-serif`/`monospace` fallback stack keeps it readable regardless. A guaranteed
-fix would register faces at runtime via `app.vault.adapter.getResourcePath(...)`;
-this is intentionally not done (kept to the simpler in-CSS approach).
+**Gotcha — Obsidian's core `.card` collides with ours.** `app.css` defines a bare
+`.card { display:flex; flex-direction:column; flex-grow:1; margin:0 10px; padding:15px
+30px }`, and the dashboard reuses `class="card"` on every card. Our scoped
+`.agentic-os .card` rule therefore resets `display/flex-direction/flex-grow/margin/
+padding` so the design's own layout (e.g. Latest Session's horizontal row) isn't
+overridden. If you add new generic class names to the markup, check them against
+`app.css` for the same kind of bleed.
 
 ## Build output is not committed
 

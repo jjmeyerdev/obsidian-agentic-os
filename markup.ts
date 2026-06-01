@@ -1,4 +1,4 @@
-// AUTO-GENERATED from the source HTML dashboards (preview.html, research-full-*.html).
+// AUTO-GENERATED from the source HTML dashboards (preview.html, sessions-full.html, research-full-*.html).
 // Each constant is the full `.dash` element; the view injects it under a scoped `.agentic-os` root.
 // Do not edit by hand — regenerate with `pnpm gen-markup` after changing the source HTML.
 
@@ -147,7 +147,10 @@ export const DASHBOARD_MARKUP = `<div class="dash" role="region" aria-label="Age
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="8 6 14 12 8 18"/></svg>
                 Latest Session
               </span>
-              <span class="latest-session__age"><span class="status-dot status-dot--live"></span>11h old</span>
+              <span class="latest-session__actions">
+                <span class="latest-session__age"><span class="status-dot status-dot--live"></span>11h old</span>
+                <button class="pill-link" type="button" data-full="full-sessions">Full <span aria-hidden="true">↗</span></button>
+              </span>
             </div>
             <h3 class="latest-session__title">Building a command center plugin for Obsidian</h3>
             <div class="latest-session__stats">
@@ -813,6 +816,107 @@ export const DASHBOARD_MARKUP = `<div class="dash" role="region" aria-label="Age
           </div>
         </section>
 
+      </div>
+
+    </div>`;
+
+export const FULL_SESSIONS_MARKUP = `<div class="dash" role="region" aria-label="Agentic OS — Sessions full view">
+
+      <!-- ── HEADER (reused verbatim) ──────────────────────────── -->
+      <header class="shell-head">
+        <div class="shell-head__brand">
+          <svg class="waveform" viewBox="0 0 22 22" aria-hidden="true">
+            <rect x="0"  y="8"  width="2.4" height="6"  rx="1.2" />
+            <rect x="4"  y="4"  width="2.4" height="14" rx="1.2" />
+            <rect x="8"  y="1"  width="2.4" height="20" rx="1.2" />
+            <rect x="12" y="5"  width="2.4" height="12" rx="1.2" />
+            <rect x="16" y="9"  width="2.4" height="4"  rx="1.2" />
+            <rect x="20" y="6"  width="2.4" height="10" rx="1.2" />
+          </svg>
+          <span class="wordmark">Agentic OS</span>
+        </div>
+        <div class="shell-head__actions">
+          <span class="status-pill" data-tone="live">
+            <span class="status-pill__dot"></span>
+            Live
+          </span>
+          <button class="icon-btn" type="button" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- ── FULL BAR (generic) ────────────────────────────────── -->
+      <div class="full-bar">
+        <button class="full-back" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M19 12H5" /><path d="m12 19-7-7 7-7" />
+          </svg>
+          Overview
+        </button>
+        <nav class="full-crumb" aria-label="Breadcrumb">
+          <span class="full-crumb__root">Overview</span>
+          <span class="full-crumb__sep" aria-hidden="true">/</span>
+          <span class="full-crumb__here">Sessions</span>
+        </nav>
+        <span class="full-bar__meta">obsidian-agentic-os</span>
+      </div>
+
+      <!-- ── FULL TOOLBAR (generic) ────────────────────────────── -->
+      <div class="full-toolbar">
+        <div class="full-toolbar__l">
+          <label class="full-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
+            </svg>
+            <input type="text" placeholder="Filter sessions…" aria-label="Filter sessions" />
+          </label>
+        </div>
+        <div class="full-toolbar__r">
+          <button class="full-sort" type="button">Sort: Recent</button>
+          <span class="full-count">— sessions</span>
+        </div>
+      </div>
+
+      <!-- ── FULL BODY ─ Sessions (swap point; plugin repaints .rank-list) ── -->
+      <div class="dash__body full-body">
+        <section class="card" aria-label="Sessions — full">
+          <div class="rsrch-head">
+            <span class="rsrch-head__title">Sessions · obsidian-agentic-os</span>
+            <div class="rsrch-head__right">
+              <span class="rsrch-date">— sessions</span>
+            </div>
+          </div>
+
+          <div class="rank-list">
+            <div class="rank-row">
+              <span class="rank-row__num">1</span>
+              <div class="rank-row__body">
+                <div class="rank-row__line1">Building a command center plugin for Obsidian<span class="rank-row__pts">3h old</span></div>
+                <div class="rank-row__desc">feat/command-center · 142 msgs · 847.00K tokens · 63 tools · opus-4.8</div>
+              </div>
+            </div>
+            <div class="rank-row">
+              <span class="rank-row__num">2</span>
+              <div class="rank-row__body">
+                <div class="rank-row__line1">Refresh Projects repo cards on tab open<span class="rank-row__pts">1d old</span></div>
+                <div class="rank-row__desc">feat/projects-tab-loading-refresh · 88 msgs · 512.00K tokens · 41 tools · opus-4.8</div>
+              </div>
+            </div>
+            <div class="rank-row">
+              <span class="rank-row__num">3</span>
+              <div class="rank-row__body">
+                <div class="rank-row__line1">Show the latest session card on Overview<span class="rank-row__pts">2d old</span></div>
+                <div class="rank-row__desc">feat/latest-session · 64 msgs · 318.00K tokens · 29 tools · sonnet-4.6</div>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
 
     </div>`;

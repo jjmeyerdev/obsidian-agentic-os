@@ -1,15 +1,24 @@
-import { addIcon, App, ItemView, normalizePath, Plugin, PluginSettingTab, Setting, WorkspaceLeaf } from "obsidian";
+import { addIcon, App, ItemView, Modal, normalizePath, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import {
 	DASHBOARD_MARKUP,
+	FULL_SESSIONS_MARKUP,
 	FULL_RADAR_MARKUP,
 	FULL_HN_MARKUP,
 	FULL_BRIEF_MARKUP,
 } from "./markup";
 import { readUsage, RateWindow, Usage } from "./usage";
 import { readGitHubStats, GitHubStats, readProjectStats, readProjectRepos, ProjectStats, ProjectRepo } from "./github";
-import { readLatestSession, LatestSession } from "./session";
+import {
+	readLatestSession,
+	LatestSession,
+	readFolderSessions,
+	FolderSessions,
+	listProjectFolders,
+	ProjectFolder,
+} from "./session";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
+export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
 
 /** Custom ribbon + tab icon: the brand waveform glyph from the dashboard header.
  *  The original art is a 22×22 viewBox; Obsidian renders icons in 0 0 100 100,
@@ -25,14 +34,24 @@ const AGENTIC_OS_ICON_SVG =
 	'<rect x="20" y="6" width="2.4" height="10" rx="1.2" />' +
 	"</g>";
 
-type ViewState = "dashboard" | "full-radar" | "full-hn" | "full-brief";
+type ViewState = "dashboard" | "full-sessions" | "full-radar" | "full-hn" | "full-brief";
 
 const MARKUP: Record<ViewState, string> = {
 	"dashboard": DASHBOARD_MARKUP,
+	"full-sessions": FULL_SESSIONS_MARKUP,
 	"full-radar": FULL_RADAR_MARKUP,
 	"full-hn": FULL_HN_MARKUP,
 	"full-brief": FULL_BRIEF_MARKUP,
 };
+
+/** Sort orders for the full sessions list, cycled by the toolbar's "Sort:" button.
+ *  lastTs may be null (no dated turns); treat that as oldest. */
+const SESSION_SORTS: Array<{ label: string; cmp: (a: LatestSession, b: LatestSession) => number }> = [
+	{ label: "Recent", cmp: (a, b) => (b.lastTs ?? 0) - (a.lastTs ?? 0) },
+	{ label: "Oldest", cmp: (a, b) => (a.lastTs ?? 0) - (b.lastTs ?? 0) },
+	{ label: "Tokens", cmp: (a, b) => b.tokens - a.tokens },
+	{ label: "Messages", cmp: (a, b) => b.messages - a.messages },
+];
 
 /** One calibration sample: weighted tokens measured at a known authoritative %.
  *  Their ratio implies a token cap; the running median across samples is the
@@ -51,6 +70,10 @@ interface AgenticOSSettings {
 	calibration: Record<RateWindow, CalibrationSample[]>;
 	/** GitHub handle for the Overview stat cards; blank = the gh-authed user. */
 	githubUsername: string;
+	/** Folders to merge in the full sessions list, for a project that has moved across
+	 *  paths. One group per line, comma-separated folder paths within a line; blank =
+	 *  off (each folder's sessions stay separate). Machine-specific, hence a setting. */
+	sessionFolderGroups: string;
 }
 
 const DEFAULT_SETTINGS: AgenticOSSettings = {
@@ -58,6 +81,7 @@ const DEFAULT_SETTINGS: AgenticOSSettings = {
 	window: "five_hour",
 	calibration: { five_hour: [], seven_day: [] },
 	githubUsername: "",
+	sessionFolderGroups: "",
 };
 
 /** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
@@ -97,6 +121,30 @@ function formatAge(ms: number): string {
 	if (m < 60) return m + "m ago";
 	const h = Math.round(m / 60);
 	return h + "h ago";
+}
+
+/** A cwd → its transcript-directory name under ~/.claude/projects. Claude Code maps
+ *  every non-alphanumeric character (slashes, spaces, dots, …) to "-", e.g.
+ *  "/Users/jay/Dev/My Repo" → "-Users-jay-Dev-My-Repo". */
+function encodeProjectDir(cwd: string): string {
+	return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/** Parse the "merge session folders" setting into groups of transcript-directory
+ *  names. A blank line separates independent groups; within a group, folder paths go
+ *  one per line (commas also accepted). Each path is encoded to its directory name.
+ *  Groups with fewer than two folders are dropped — nothing to merge. */
+function parseFolderGroups(raw: string): string[][] {
+	return raw
+		.split(/\n\s*\n/)
+		.map((block) =>
+			block
+				.split(/[\n,]/)
+				.map((p) => p.trim())
+				.filter(Boolean)
+				.map((p) => (p.includes("/") ? encodeProjectDir(p) : p)),
+		)
+		.filter((g) => g.length > 1);
 }
 
 /** Session age, e.g. "11h old" / "23m old" / "2d old"; sub-minute reads "just now". */
@@ -149,6 +197,13 @@ class AgenticOSView extends ItemView {
 	private ghToken = 0;
 	/** Stale-paint guard for the Latest Session card. */
 	private sessionToken = 0;
+	/** Stale-paint guard for the full sessions list ("Full ↗" deep-dive). */
+	private sessionsListToken = 0;
+	/** Full sessions list state: fetched rows (newest-first) plus the toolbar's live
+	 *  sort/filter, so re-sorting and filtering repaint from cache without refetching. */
+	private folderSessions: LatestSession[] = [];
+	private sessionsSortMode = 0;
+	private sessionsFilter = "";
 	/** Stale-paint guard for the Projects tab (heaviest fetch — commit history). */
 	private projectsToken = 0;
 	/** Stale-paint guard for the light repos-only refresh (on tab open). */
@@ -199,6 +254,7 @@ class AgenticOSView extends ItemView {
 				void this.refreshLatestSession();
 				void this.refreshGitHub();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
+				if (this.state === "full-sessions") void this.refreshFolderSessions();
 			}),
 		);
 	}
@@ -240,6 +296,15 @@ class AgenticOSView extends ItemView {
 			if (this.projectsLoaded) void this.refreshProjects();
 		} else {
 			this.wireFullView(this.root);
+			if (this.state === "full-sessions") {
+				// Fresh entry starts unsorted-from-newest and unfiltered, matching the
+				// markup's empty search box and "Sort: Recent" default.
+				this.sessionsSortMode = 0;
+				this.sessionsFilter = "";
+				// Shimmer over the placeholder rows until the read paints real data.
+				this.showSessionsSkeleton(this.root);
+				void this.refreshFolderSessions();
+			}
 		}
 	}
 
@@ -437,8 +502,116 @@ class AgenticOSView extends ItemView {
 			chip.textContent = (sp >= 0 ? cur.slice(0, sp + 1) : "") + value;
 		};
 		const chips = card.querySelectorAll<HTMLElement>(".latest-session__meta .chip");
-		setChip(chips[0] ?? null, s.ok ? s.branch : null);
+		setChip(chips[0] ?? null, s.ok && s.branch !== "HEAD" ? s.branch : null);
 		setChip(chips[1] ?? null, s.ok ? s.cwd : null);
+	}
+
+	/** Read every session in the card's folder and paint the full sessions list. No-op
+	 *  unless that view is rendered; guarded against stale paints like the others. */
+	async refreshFolderSessions(): Promise<void> {
+		if (!this.root || this.state !== "full-sessions") return;
+		const ticket = ++this.sessionsListToken;
+
+		const data = await readFolderSessions(parseFolderGroups(this.plugin.settings.sessionFolderGroups));
+
+		if (!this.root || ticket !== this.sessionsListToken || this.state !== "full-sessions") return;
+		this.paintFolderSessions(this.root, data);
+	}
+
+	/** Swap the static placeholder rows for shimmering skeletons while the read runs,
+	 *  and neutralize the design's placeholder folder text so it can't flash. */
+	private showSessionsSkeleton(root: HTMLElement): void {
+		const title = root.querySelector<HTMLElement>(".rsrch-head__title");
+		if (title) title.textContent = "Sessions";
+		const meta = root.querySelector<HTMLElement>(".full-bar__meta");
+		if (meta) meta.textContent = "";
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.add("is-loading");
+		const row =
+			'<div class="rank-row"><span class="rank-row__num"></span>' +
+			'<div class="rank-row__body"><div class="rank-row__line1"></div>' +
+			'<div class="rank-row__desc"></div></div></div>';
+		list.innerHTML = row.repeat(6);
+	}
+
+	private paintFolderSessions(root: HTMLElement, data: FolderSessions): void {
+		// Cache the rows so the toolbar's sort/filter can repaint without refetching.
+		this.folderSessions = data.sessions;
+
+		const title = root.querySelector<HTMLElement>(".rsrch-head__title");
+		if (title) title.textContent = data.folder ? `Sessions · ${data.folder}` : "Sessions";
+
+		const meta = root.querySelector<HTMLElement>(".full-bar__meta");
+		if (meta) meta.textContent = data.folder ?? "";
+
+		this.renderSessionsList(root);
+	}
+
+	/** Apply the current sort + filter to the cached rows and paint the list, the
+	 *  count slots, and the sort-button label. */
+	private renderSessionsList(root: HTMLElement): void {
+		const sort = SESSION_SORTS[this.sessionsSortMode];
+		const sortBtn = root.querySelector<HTMLElement>(".full-sort");
+		if (sortBtn) sortBtn.textContent = `Sort: ${sort.label}`;
+
+		const q = this.sessionsFilter.trim().toLowerCase();
+		const rows = (q
+			? this.folderSessions.filter(
+					(s) =>
+						(s.title ?? "").toLowerCase().includes(q) || (s.branch ?? "").toLowerCase().includes(q),
+				)
+			: this.folderSessions
+		)
+			.slice()
+			.sort(sort.cmp);
+
+		// Count slots: the body header's right label and the toolbar count.
+		const n = rows.length;
+		const countLabel = `${n} ${n === 1 ? "session" : "sessions"}`;
+		const date = root.querySelector<HTMLElement>(".rsrch-date");
+		if (date) date.textContent = countLabel;
+		const count = root.querySelector<HTMLElement>(".full-count");
+		if (count) count.textContent = countLabel;
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading"); // real data (or an empty state) — stop shimmering.
+		if (!n) {
+			const msg = this.folderSessions.length
+				? "No sessions match your filter."
+				: "No sessions found for this folder.";
+			list.innerHTML = `<div class="rank-row"><div class="rank-row__body"><div class="rank-row__desc">${msg}</div></div></div>`;
+			return;
+		}
+		list.innerHTML = rows.map((s, i) => this.sessionRowHtml(s, i + 1)).join("");
+	}
+
+	/** One session row, modeled on the HN rank-row: ordinal, title + age, then a
+	 *  meta line of branch · messages · tokens · tool calls · model. */
+	private sessionRowHtml(s: LatestSession, num: number): string {
+		const age = s.lastTs !== null ? formatSessionAge(Date.now() - s.lastTs) : "";
+		const desc = [
+			// "HEAD" is a detached-HEAD placeholder, not a real branch — omit it.
+			s.branch === "HEAD" ? null : s.branch,
+			`${s.messages.toLocaleString("en-US")} msgs`,
+			`${formatTokens(s.tokens)} tokens`,
+			`${s.toolCalls.toLocaleString("en-US")} tools`,
+			s.model,
+		]
+			.filter((p): p is string => Boolean(p))
+			.map((p) => this.esc(p))
+			.join(" · ");
+		return (
+			'<div class="rank-row">' +
+			`<span class="rank-row__num">${num}</span>` +
+			'<div class="rank-row__body">' +
+			`<div class="rank-row__line1">${this.esc(s.title ?? "Untitled session")}` +
+			`<span class="rank-row__pts">${this.esc(age)}</span></div>` +
+			`<div class="rank-row__desc">${desc}</div>` +
+			"</div></div>"
+		);
 	}
 
 	/** Fetch + paint the Projects ("GitHub Activity") tab. Heaviest read (per-repo
@@ -568,8 +741,11 @@ class AgenticOSView extends ItemView {
 		const lang = r.lang
 			? `<div class="gh-repo__lang"><span class="gh-repo__lang-dot" style="background:${r.langColor}"></span><span class="gh-repo__lang-name">${this.esc(r.lang)}</span></div>`
 			: '<div class="gh-repo__lang"></div>';
+		const link = r.url
+			? ` data-repo-url="${this.esc(r.url)}" data-repo-name="${this.esc(r.name)}" role="link" tabindex="0"`
+			: "";
 		return (
-			`<article class="card gh-repo" aria-label="Repository: ${this.esc(r.name)}">` +
+			`<article class="card gh-repo" aria-label="Repository: ${this.esc(r.name)}"${link}>` +
 			`<div class="gh-repo__head"><div class="gh-repo__name-row">${repoIcon}<span class="gh-repo__name">${this.esc(r.name)}</span></div>` +
 			`<span class="gh-repo__updated micro-label">${r.updated ? "Updated " + this.esc(r.updated) : ""}</span></div>` +
 			`<p class="gh-repo__desc">${this.esc(r.desc)}</p>` +
@@ -651,12 +827,33 @@ class AgenticOSView extends ItemView {
 		const restore = tabs.find((t) => t.getAttribute("aria-controls") === this.activeTab);
 		if (restore) selectTab(restore);
 
+		// Repo cards are painted async, so delegate off the (static) grid container:
+		// clicking/Entering a card opens that repo in an embedded browser tab.
+		const grid = root.querySelector<HTMLElement>(".gh-repo-grid");
+		if (grid) {
+			const open = (ev: Event): void => {
+				const card = (ev.target as HTMLElement).closest<HTMLElement>("[data-repo-url]");
+				const url = card?.getAttribute("data-repo-url");
+				if (url) void this.openRepo(url, card?.getAttribute("data-repo-name") ?? "Repository");
+			};
+			this.on(grid, "click", open);
+			this.on(grid, "keydown", (ev) => {
+				const e = ev as KeyboardEvent;
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					open(ev);
+				}
+			});
+		}
+
 		// Each "Full ↗" pill swaps the whole pane to its deep-dive view.
 		for (const btn of Array.from(root.querySelectorAll<HTMLElement>("[data-full]"))) {
 			this.on(btn, "click", () => {
-				// Coming back should land on Research_, where these buttons live.
-				this.activeTab = "panel-research";
-				this.navigate(btn.getAttribute("data-full") as ViewState);
+				const target = btn.getAttribute("data-full") as ViewState;
+				// Coming back should land on the tab the pill lives on: the Sessions
+				// pill is on Overview, the rest on Research_.
+				this.activeTab = target === "full-sessions" ? "panel-overview" : "panel-research";
+				this.navigate(target);
 			});
 		}
 	}
@@ -667,6 +864,93 @@ class AgenticOSView extends ItemView {
 		if (back) {
 			this.on(back, "click", () => this.navigate("dashboard"));
 		}
+		if (this.state === "full-sessions") this.wireSessionsToolbar(root);
+	}
+
+	/** The sessions list toolbar: the "Sort:" button cycles orders, the search box
+	 *  filters by title/branch. Both repaint from the cached rows (no refetch). */
+	private wireSessionsToolbar(root: HTMLElement): void {
+		const sortBtn = root.querySelector<HTMLElement>(".full-sort");
+		if (sortBtn) {
+			this.on(sortBtn, "click", () => {
+				this.sessionsSortMode = (this.sessionsSortMode + 1) % SESSION_SORTS.length;
+				this.renderSessionsList(root);
+			});
+		}
+		const search = root.querySelector<HTMLInputElement>(".full-search input");
+		if (search) {
+			this.on(search, "input", () => {
+				this.sessionsFilter = search.value;
+				this.renderSessionsList(root);
+			});
+		}
+	}
+
+	/** Open a repo in an embedded browser tab (reuses one if already open). */
+	private async openRepo(url: string, name: string): Promise<void> {
+		const { workspace } = this.app;
+		const existing = workspace.getLeavesOfType(VIEW_TYPE_REPO_BROWSER)[0];
+		const leaf = existing ?? workspace.getLeaf("tab");
+		await leaf.setViewState({ type: VIEW_TYPE_REPO_BROWSER, active: true, state: { url, title: name } });
+		workspace.revealLeaf(leaf);
+	}
+}
+
+/** A minimal in-app browser tab: an Electron <webview> filling a center leaf.
+ *  Desktop-only (the <webview> tag is an Electron feature), used to open a repo's
+ *  GitHub page without leaving Obsidian. URL/title arrive via view state so the
+ *  tab survives a workspace reload. */
+class RepoBrowserView extends ItemView {
+	private url = "";
+	private title = "Repository";
+
+	constructor(leaf: WorkspaceLeaf) {
+		super(leaf);
+	}
+
+	getViewType(): string {
+		return VIEW_TYPE_REPO_BROWSER;
+	}
+
+	getDisplayText(): string {
+		return this.title;
+	}
+
+	getIcon(): string {
+		return "globe";
+	}
+
+	async setState(state: unknown, result: ViewStateResult): Promise<void> {
+		const s = state as { url?: string; title?: string } | null;
+		if (s && typeof s.url === "string") {
+			this.url = s.url;
+			this.title = s.title || s.url;
+		}
+		this.renderWebview();
+		await super.setState(state, result);
+	}
+
+	getState(): Record<string, unknown> {
+		return { url: this.url, title: this.title };
+	}
+
+	async onOpen(): Promise<void> {
+		this.renderWebview();
+	}
+
+	/** (Re)mount the webview for the current URL. contentEl padding is zeroed so
+	 *  the page fills the pane edge-to-edge. */
+	private renderWebview(): void {
+		this.contentEl.empty();
+		if (!this.url) return;
+		this.contentEl.style.padding = "0";
+		const webview = document.createElement("webview");
+		webview.setAttribute("src", this.url);
+		webview.setAttribute("allowpopups", "");
+		webview.style.width = "100%";
+		webview.style.height = "100%";
+		webview.style.border = "0";
+		this.contentEl.appendChild(webview);
 	}
 }
 
@@ -681,6 +965,7 @@ export default class AgenticOSPlugin extends Plugin {
 		addIcon(AGENTIC_OS_ICON_ID, AGENTIC_OS_ICON_SVG);
 
 		this.registerView(VIEW_TYPE_AGENTIC_OS, (leaf) => new AgenticOSView(leaf, this));
+		this.registerView(VIEW_TYPE_REPO_BROWSER, (leaf) => new RepoBrowserView(leaf));
 
 		this.addRibbonIcon(AGENTIC_OS_ICON_ID, "Open Agentic OS", () => {
 			void this.activateView();
@@ -816,6 +1101,87 @@ export default class AgenticOSPlugin extends Plugin {
 			if (view instanceof AgenticOSView) void view.refreshGitHub();
 		}
 	}
+
+	/** Re-read the full sessions list in every open view — used after the merge-folders
+	 *  setting changes. No-op in views not currently on the sessions screen. */
+	repaintFolderSessions(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENTIC_OS)) {
+			const view = leaf.view;
+			if (view instanceof AgenticOSView) void view.refreshFolderSessions();
+		}
+	}
+}
+
+/** A checklist of detected Claude Code project folders, for building the "merge
+ *  session folders" group without typing paths. Returns the chosen folders' real
+ *  cwd paths via onSave. */
+class FolderPickerModal extends Modal {
+	constructor(
+		app: App,
+		private folders: ProjectFolder[],
+		private selected: Set<string>,
+		private onSave: (paths: string[]) => void,
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.createEl("h3", { text: "Merge session folders" });
+		contentEl.createEl("p", {
+			text: "Select the folders that are really the same project. They'll be shown as one history in the sessions list.",
+			cls: "setting-item-description",
+		});
+
+		const checks = new Map<string, HTMLInputElement>();
+		const list = contentEl.createDiv();
+		list.style.maxHeight = "50vh";
+		list.style.overflowY = "auto";
+		list.style.margin = "12px 0";
+
+		if (!this.folders.length) {
+			list.createEl("p", { text: "No Claude Code project folders found.", cls: "setting-item-description" });
+		}
+
+		for (const f of this.folders) {
+			const row = list.createEl("label");
+			row.style.display = "flex";
+			row.style.alignItems = "center";
+			row.style.gap = "10px";
+			row.style.padding = "6px 4px";
+			row.style.cursor = "pointer";
+
+			const cb = row.createEl("input", { attr: { type: "checkbox" } });
+			cb.checked = this.selected.has(f.dir);
+			checks.set(f.dir, cb);
+
+			const text = row.createDiv();
+			text.createDiv({ text: f.cwd });
+			const meta = text.createDiv({
+				text: `${f.sessions} ${f.sessions === 1 ? "session" : "sessions"} · ${formatSessionAge(Date.now() - f.lastTs)}`,
+				cls: "setting-item-description",
+			});
+			meta.style.fontSize = "11px";
+		}
+
+		const footer = contentEl.createDiv();
+		footer.style.display = "flex";
+		footer.style.justifyContent = "flex-end";
+		footer.style.gap = "8px";
+		footer.style.marginTop = "12px";
+
+		footer.createEl("button", { text: "Cancel" }).onclick = () => this.close();
+		const save = footer.createEl("button", { text: "Save", cls: "mod-cta" });
+		save.onclick = () => {
+			const paths = this.folders.filter((f) => checks.get(f.dir)?.checked).map((f) => f.cwd);
+			this.onSave(paths);
+			this.close();
+		};
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
 }
 
 class AgenticOSSettingTab extends PluginSettingTab {
@@ -870,5 +1236,38 @@ class AgenticOSSettingTab extends PluginSettingTab {
 						this.plugin.repaintGitHub();
 					})
 			);
+
+		const mergeSetting = new Setting(containerEl)
+			.setName("Merge session folders")
+			.setDesc(
+				"Treat folders that are really the same project — e.g. after moving or renaming it — as one history in the full sessions list. Pick them with the button, or edit the paths below (one per line; blank line separates unrelated projects). Empty = every folder on its own.",
+			);
+
+		// Full-width textarea below the row for manual edits / multiple groups; the
+		// picker button writes into it. Created after the Setting so it lands beneath.
+		const ta = containerEl.createEl("textarea");
+		ta.value = this.plugin.settings.sessionFolderGroups;
+		ta.placeholder = "/Users/you/old-location/my-project\n/Users/you/new-location/my-project";
+		ta.rows = 4;
+		ta.style.width = "100%";
+		ta.style.fontFamily = "var(--font-monospace)";
+		ta.style.fontSize = "12px";
+		ta.style.marginBottom = "var(--size-4-4)";
+		ta.addEventListener("input", async () => {
+			this.plugin.settings.sessionFolderGroups = ta.value;
+			await this.plugin.saveSettings();
+			this.plugin.repaintFolderSessions();
+		});
+
+		mergeSetting.addButton((btn) =>
+			btn.setButtonText("Choose folders…").onClick(async () => {
+				const folders = await listProjectFolders();
+				const selected = new Set(parseFolderGroups(ta.value).flat());
+				new FolderPickerModal(this.app, folders, selected, (paths) => {
+					ta.value = paths.join("\n");
+					ta.dispatchEvent(new Event("input")); // reuse the save+repaint handler
+				}).open();
+			}),
+		);
 	}
 }

@@ -5,11 +5,12 @@
  *
  * Source location comes from AGENTIC_OS_SRC_DIR (set it in .env), or pass the
  * directory as the first CLI argument. That folder must contain:
- *   preview.html, research-full-radar.html, research-full-hn.html, research-full-brief.html
+ *   preview.html, sessions-full.html, research-full-radar.html, research-full-hn.html,
+ *   research-full-brief.html
  *
  * For each file it extracts the full `.dash` element (the only child of the
  * `.agentic-os` root) and emits it as a template-literal export. It also injects
- * `data-full` attributes onto the three dashboard "Full ↗" pills so main.ts can
+ * `data-full` attributes onto the four dashboard "Full ↗" pills so main.ts can
  * wire navigation off them.
  */
 import fs from "fs";
@@ -51,12 +52,15 @@ function extractDash(file) {
 }
 
 let dash = extractDash("preview.html");
+const sessions = extractDash("sessions-full.html");
 const radar = extractDash("research-full-radar.html");
 const hn = extractDash("research-full-hn.html");
 const brief = extractDash("research-full-brief.html");
 
-// Tag the three dashboard "Full ↗" pills, in DOM order: radar, hn, brief.
-const targets = ["full-radar", "full-hn", "full-brief"];
+// Tag the four dashboard "Full ↗" pills, in DOM order. The Latest Session card sits
+// on the Overview panel (first in the DOM), so its pill leads; the other three are on
+// the Research panel.
+const targets = ["full-sessions", "full-radar", "full-hn", "full-brief"];
 const pill = '<button class="pill-link" type="button">';
 const parts = dash.split(pill);
 if (parts.length !== targets.length + 1) {
@@ -73,13 +77,14 @@ const esc = (s) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g
 
 const entries = [
 	["DASHBOARD_MARKUP", dash],
+	["FULL_SESSIONS_MARKUP", sessions],
 	["FULL_RADAR_MARKUP", radar],
 	["FULL_HN_MARKUP", hn],
 	["FULL_BRIEF_MARKUP", brief],
 ];
 
 const header =
-	"// AUTO-GENERATED from the source HTML dashboards (preview.html, research-full-*.html).\n" +
+	"// AUTO-GENERATED from the source HTML dashboards (preview.html, sessions-full.html, research-full-*.html).\n" +
 	"// Each constant is the full `.dash` element; the view injects it under a scoped `.agentic-os` root.\n" +
 	"// Do not edit by hand — regenerate with `pnpm gen-markup` after changing the source HTML.\n\n";
 

@@ -88,7 +88,11 @@ the number of `.pill-link` buttons, the generator throws by design.
   (`readProjectStats`, plus the light `readProjectRepos`), all via the `gh` CLI (reuses
   the user's `gh auth`, no stored token). GUI-launched Obsidian doesn't inherit the
   shell PATH, so `runGh` augments PATH with the usual Homebrew/usr spots.
-- `session.ts` — the Latest Session card, from the most recent session file on disk.
+- `session.ts` — the Latest Session card, from the most recent *finished* session
+  file on disk. Sessions currently open in a live window (those with a
+  `~/.claude/sessions/<pid>.json` whose pid is alive) are skipped, so the card shows
+  what you last worked on rather than the window you're sitting in; if the only
+  session is the live one, it falls back to showing that.
 
 The pattern: `render()` injects the static markup, then async `refresh*()` methods
 fetch and `paint*()` write into known selectors. **Every refresh carries a monotonic

@@ -1,13 +1,16 @@
 // Source of truth for the Overview tab's "Latest Session" card.
 //
 // Claude Code writes one JSONL transcript per session under ~/.claude/projects/
-// <encoded-cwd>/<session-id>.jsonl, appending a record per turn. The newest file
-// by mtime is the most recent (or still-active) session. We read it and derive the
-// card's figures directly from the records — no stored history. Desktop-only
-// (Node fs/os), like usage.ts.
+// <encoded-cwd>/<session-id>.jsonl, appending a record per turn. We surface the most
+// recent session you are *not* currently sitting in — the one you last finished — so
+// the card answers "what was I working on?" rather than mirroring the live window
+// (which you already know). A session is "live" when a Claude Code process has it
+// open, recorded in ~/.claude/sessions/<pid>.json; those are skipped. The card's
+// figures are derived directly from the transcript records — no stored history.
+// Desktop-only (Node fs/os), like usage.ts.
 import { promises as fs } from "fs";
 import { homedir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 
 export interface LatestSession {
 	/** false when no readable transcript exists (mobile, or none written yet). */
@@ -45,6 +48,39 @@ const EMPTY: LatestSession = {
 };
 
 const PROJECTS_DIR = (home: string): string => join(home, ".claude", "projects");
+const SESSIONS_DIR = (home: string): string => join(home, ".claude", "sessions");
+
+/** sessionIds with a Claude Code process currently holding them open. Each live
+ *  interactive process writes ~/.claude/sessions/<pid>.json carrying its sessionId;
+ *  the file outlives a crash, so we confirm the pid is still alive (signal 0 throws
+ *  if it isn't) before trusting it — a stale entry would otherwise hide a finished
+ *  session forever. */
+async function liveSessionIds(home: string): Promise<Set<string>> {
+	const ids = new Set<string>();
+	let entries;
+	try {
+		entries = await fs.readdir(SESSIONS_DIR(home), { withFileTypes: true });
+	} catch {
+		return ids; // No sessions dir → nothing is open.
+	}
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+		let rec: any;
+		try {
+			rec = JSON.parse(await fs.readFile(join(SESSIONS_DIR(home), entry.name), "utf8"));
+		} catch {
+			continue;
+		}
+		if (typeof rec.sessionId !== "string" || typeof rec.pid !== "number") continue;
+		try {
+			process.kill(rec.pid, 0); // Probe only — throws ESRCH if the process is gone.
+		} catch {
+			continue; // Stale file from a crashed session.
+		}
+		ids.add(rec.sessionId);
+	}
+	return ids;
+}
 
 /** "claude-opus-4-8" → "opus-4.8"; "claude-sonnet-4-6" → "sonnet-4.6". Strips the
  *  "claude-" prefix and any "[…]" suffix, keeps the family, and joins the short
@@ -185,8 +221,30 @@ async function parseSession(file: string): Promise<LatestSession | null> {
 	};
 }
 
-/** Read the most recent Claude Code session across all projects. Scans transcripts
- *  newest-first and returns the first one holding actual turns. */
+/** The transcript whose figures the card shows: the most recent *finished* session
+ *  across all projects (newest-first, holding actual turns, not open in a live
+ *  window). If every session with content is live (e.g. only the window you're in
+ *  exists), falls back to the newest of those so nothing is ever blank. Returns the
+ *  path alongside the parsed session — the path's directory is the session's folder,
+ *  which the full sessions list anchors on. */
+async function latestFinished(home: string): Promise<{ path: string; session: LatestSession } | null> {
+	const live = await liveSessionIds(home);
+	let liveFallback: { path: string; session: LatestSession } | null = null;
+
+	for (const path of await transcriptsByRecency(PROJECTS_DIR(home))) {
+		const session = await parseSession(path);
+		if (!session) continue;
+		// Transcripts are named <sessionId>.jsonl; skip the ones held open right now.
+		if (live.has(basename(path, ".jsonl"))) {
+			liveFallback ??= { path, session }; // Newest live, kept as last resort.
+			continue;
+		}
+		return { path, session };
+	}
+	return liveFallback;
+}
+
+/** Read the most recent *finished* Claude Code session across all projects. */
 export async function readLatestSession(): Promise<LatestSession> {
 	let home: string;
 	try {
@@ -194,10 +252,135 @@ export async function readLatestSession(): Promise<LatestSession> {
 	} catch {
 		return EMPTY; // No OS home (mobile) — transcripts unreachable.
 	}
+	return (await latestFinished(home))?.session ?? EMPTY;
+}
 
-	for (const path of await transcriptsByRecency(PROJECTS_DIR(home))) {
-		const session = await parseSession(path);
-		if (session) return session;
+/** Every session in the same folder as the card's session, newest-first — backs the
+ *  "Full ↗" sessions list. */
+export interface FolderSessions {
+	/** false when no readable transcript exists (mobile, or none written yet). */
+	ok: boolean;
+	/** The folder (cwd basename) the sessions belong to, or null. */
+	folder: string | null;
+	/** Each session in the folder, newest-first. Includes the live one, if any. */
+	sessions: LatestSession[];
+}
+
+const EMPTY_FOLDER: FolderSessions = { ok: false, folder: null, sessions: [] };
+
+/** List every session sharing a folder with the card's session. The folder is the
+ *  one the card's session (the most recent finished one) ran in; its transcripts all
+ *  live in a single ~/.claude/projects/<encoded-cwd>/ directory, so we parse every
+ *  *.jsonl there. Unlike the card, this includes any live session — it's a full
+ *  history, newest-first.
+ *
+ *  `folderGroups` lets a project that has moved across paths read as one history:
+ *  each group is a list of transcript-directory names that are "the same project",
+ *  and when the anchor's directory is in a group, every directory in it is unioned
+ *  (their transcript files persist under ~/.claude/projects even after the source
+ *  folder is renamed or deleted). Empty/absent → the plain single-directory behavior. */
+export async function readFolderSessions(folderGroups: string[][] = []): Promise<FolderSessions> {
+	let home: string;
+	try {
+		home = homedir();
+	} catch {
+		return EMPTY_FOLDER;
 	}
-	return EMPTY;
+
+	const anchor = await latestFinished(home);
+	if (!anchor) return EMPTY_FOLDER;
+
+	const anchorDir = dirname(anchor.path);
+	const group = folderGroups.find((g) => g.includes(basename(anchorDir)));
+	const dirs = group ? group.map((name) => join(PROJECTS_DIR(home), name)) : [anchorDir];
+
+	const sessions: LatestSession[] = [];
+	for (const dir of dirs) {
+		// A group may name a directory that no longer exists; transcriptsByRecency
+		// returns [] for an unreadable dir, so missing folders are skipped silently.
+		for (const path of await transcriptsByRecency(dir)) {
+			const session = await parseSession(path);
+			if (session) sessions.push(session);
+		}
+	}
+	return { ok: sessions.length > 0, folder: anchor.session.cwd, sessions };
+}
+
+/** One Claude Code project directory, for the folder-merge picker. */
+export interface ProjectFolder {
+	/** Directory name under ~/.claude/projects (the encoded cwd). */
+	dir: string;
+	/** Real working-directory path it represents, read from a transcript (the source
+	 *  folder may since have moved/been deleted, but the recorded path persists). */
+	cwd: string;
+	/** Number of transcripts in the folder. */
+	sessions: number;
+	/** Newest transcript's mtime (epoch ms), for sorting + an "age" hint. */
+	lastTs: number;
+}
+
+/** Read the first `cwd` value out of a transcript without parsing the whole file —
+ *  it appears on early records, so a head read of the file suffices. */
+async function firstCwd(file: string): Promise<string | null> {
+	let fh;
+	try {
+		fh = await fs.open(file, "r");
+	} catch {
+		return null;
+	}
+	try {
+		const buf = Buffer.alloc(65536);
+		const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+		for (const line of buf.toString("utf8", 0, bytesRead).split("\n")) {
+			if (!line) continue;
+			try {
+				const rec = JSON.parse(line);
+				if (typeof rec.cwd === "string") return rec.cwd;
+			} catch {
+				// Partial/truncated line at the read boundary — skip.
+			}
+		}
+		return null;
+	} finally {
+		await fh.close();
+	}
+}
+
+/** Enumerate every project directory under ~/.claude/projects that holds at least one
+ *  transcript, newest-first. Backs the settings folder picker. */
+export async function listProjectFolders(): Promise<ProjectFolder[]> {
+	let home: string;
+	try {
+		home = homedir();
+	} catch {
+		return [];
+	}
+
+	const base = PROJECTS_DIR(home);
+	let entries;
+	try {
+		entries = await fs.readdir(base, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+
+	const folders: ProjectFolder[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const files = await transcriptsByRecency(join(base, entry.name));
+		if (!files.length) continue;
+		let lastTs = 0;
+		try {
+			lastTs = (await fs.stat(files[0])).mtimeMs;
+		} catch {
+			// Vanished between listing and stat — fall back to 0.
+		}
+		folders.push({
+			dir: entry.name,
+			cwd: (await firstCwd(files[0])) ?? entry.name,
+			sessions: files.length,
+			lastTs,
+		});
+	}
+	return folders.sort((a, b) => b.lastTs - a.lastTs);
 }

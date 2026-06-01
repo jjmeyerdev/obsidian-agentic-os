@@ -445,11 +445,23 @@ class AgenticOSView extends ItemView {
 		if (!this.root || this.state !== "dashboard") return;
 		const ticket = ++this.projectsToken;
 
+		// First load runs the heaviest fetch (per-repo commit history). Show the
+		// shimmer skeleton meanwhile so the markup's placeholder data never flashes;
+		// later refreshes repaint live data in place, so they don't re-shimmer.
+		const firstLoad = !this.projectsLoaded;
+		if (firstLoad) this.setProjectsLoading(true);
+
 		const stats = await readProjectStats(this.plugin.settings.githubUsername);
 
 		if (!this.root || ticket !== this.projectsToken) return;
 		if (stats.ok) this.projectsLoaded = true;
 		this.paintProjects(this.root, stats);
+		if (firstLoad) this.setProjectsLoading(false);
+	}
+
+	/** Toggle the first-load shimmer skeleton on the Projects panel. */
+	private setProjectsLoading(on: boolean): void {
+		this.root?.querySelector<HTMLElement>("#panel-projects")?.classList.toggle("is-loading", on);
 	}
 
 	private esc(t: string): string {

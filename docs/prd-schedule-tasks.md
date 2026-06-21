@@ -1,6 +1,6 @@
 # PRD — Schedule + Daily Tasks (live slice)
 
-**Status:** draft for review
+**Status:** shipped
 **Slice:** 1 of the dashboard-live effort (replacing static panels with live data)
 **Date:** 2026-06-02
 

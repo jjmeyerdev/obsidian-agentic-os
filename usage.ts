@@ -9,9 +9,9 @@
 // absolute token figure ("≈5.67M") is an *estimate* — a weighted sum of the
 // local transcripts over the snapshot's actual window — used only to ballpark
 // how many tokens the percentage represents. Desktop-only (Node fs/os).
-import { promises as fs } from "fs";
+import { promises as fs, watch } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, dirname, basename } from "path";
 
 /** Which rate-limit the panel tracks — both are reported in the snapshot. */
 export type RateWindow = "five_hour" | "seven_day";
@@ -136,4 +136,47 @@ export async function readUsage(window: RateWindow, windowHours: number): Promis
 	}
 
 	return { ok: true, pct, resetsAt, snapshotTs, measuredTokens };
+}
+
+/** Coalesce the statusline's atomic write (a temp file write + rename fire several
+ *  fs events within milliseconds) into a single repaint. */
+const SNAPSHOT_DEBOUNCE_MS = 400;
+
+/** Invoke `onChange` (debounced) whenever the usage snapshot is rewritten — e.g. the
+ *  dashboard's "Pull Metrics" quick action, or any live Claude Code statusline render —
+ *  so the panel repaints instantly instead of waiting for the 60s heartbeat.
+ *
+ *  The statusline writes atomically (a temp file, then `mv` into place), which swaps the
+ *  file's inode; a watch on the file path itself goes deaf after the first rename. So we
+ *  watch the parent directory and filter by basename. Returns a disposer; if the home
+ *  dir or the watch can't be established (e.g. mobile) it's a no-op disposer. */
+export function watchSnapshot(onChange: () => void): () => void {
+	let home: string;
+	try {
+		home = homedir();
+	} catch {
+		return () => {};
+	}
+	const file = SNAPSHOT_PATH(home);
+	const dir = dirname(file);
+	const name = basename(file);
+
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	let watcher: ReturnType<typeof watch>;
+	try {
+		watcher = watch(dir, (_event, filename) => {
+			// `filename` is the changed entry's basename on macOS; ignore the dir's other
+			// churn (projects/, file-history/, the .tmp staging file, …).
+			if (filename !== name) return;
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(onChange, SNAPSHOT_DEBOUNCE_MS);
+		});
+	} catch {
+		return () => {};
+	}
+
+	return () => {
+		if (timer) clearTimeout(timer);
+		watcher.close();
+	};
 }

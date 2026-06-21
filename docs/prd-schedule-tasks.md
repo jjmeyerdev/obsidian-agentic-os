@@ -143,3 +143,24 @@ tasks:
 
 The plugin can only paint what exists on disk, so the order within this slice is:
 configure Daily Notes → author `plan-today` (writes the file) → wire the plugin read.
+
+## Update — shipped
+
+**Shipped 2026-06-21 (PR #7)**, with these notes vs. the design above:
+
+- The plugin read landed as `dayplan.ts` (`readDayPlan` / `setTaskDone` / `addTask`),
+  mirroring the `usage` / `github` / `session` pattern. Unlike those, it reads
+  *synchronously* through Obsidian's in-memory metadata cache and writes back through
+  `fileManager.processFrontMatter`, so it needs no stale-paint token guard.
+- Repaint is driven by the **`metadataCache` "changed" event** on today's daily-note
+  path (covering both a `plan-today` run and the panel's own task write-back), in
+  addition to the 60s tick and the active-leaf repaint.
+- `+ add task` appends `{ label: "New task", done: false }` (a named placeholder
+  rather than a blank label).
+- The daily-note path honors the core Daily Notes config (folder + moment date
+  format), falling back to `daily-notes/YYYY-MM-DD.md`.
+
+**Follow-up — PR #9 (2026-06-21):** Schedule times render in **12-hour AM/PM**
+(`13:00` → `1:00 PM`); all-day (empty) entries stay blank and malformed values pass
+through unchanged. The `tasks:` array stays index-aligned with the frontmatter so a
+rendered row's index is a valid write-back target.

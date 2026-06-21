@@ -6,7 +6,7 @@ import {
 	FULL_HN_MARKUP,
 	FULL_BRIEF_MARKUP,
 } from "./markup";
-import { readUsage, RateWindow, Usage } from "./usage";
+import { readUsage, RateWindow, Usage, watchSnapshot } from "./usage";
 import { readGitHubStats, GitHubStats, readProjectStats, readProjectRepos, ProjectStats, ProjectRepo } from "./github";
 import {
 	readLatestSession,
@@ -300,6 +300,10 @@ class AgenticOSView extends ItemView {
 				}
 			}),
 		);
+		// Repaint Token Burn the instant the usage snapshot is rewritten — e.g. the
+		// "Pull Metrics" quick action — rather than waiting up to 60s for the heartbeat.
+		// refreshTokenBurn already no-ops unless the dashboard is the active state.
+		this.register(watchSnapshot(() => void this.refreshTokenBurn()));
 	}
 
 	async onClose(): Promise<void> {
@@ -1016,7 +1020,16 @@ class AgenticOSView extends ItemView {
 				// call Meta Bind's `type: command` action uses. Returns false if the
 				// command isn't found (e.g. Shell Commands not installed / wrong ID).
 				const ok = (this.app as any).commands?.executeCommandById(id);
-				if (!ok) new Notice(`Command not found: ${id} — check Agentic OS settings.`);
+				if (!ok) {
+					new Notice(`Command not found: ${id} — check Agentic OS settings.`);
+					return;
+				}
+				// "Pull Metrics" reads the snapshot, it can't rewrite it: only an
+				// interactive statusline render produces the live rate-limit percentage,
+				// which headless `claude -p` never sees. So there's no file change for
+				// watchSnapshot to catch — re-read it ourselves so the panel repaints and
+				// "last pull" reflects the snapshot's true current age on demand.
+				if (label === "Pull Metrics") void this.refreshTokenBurn();
 			});
 		}
 	}

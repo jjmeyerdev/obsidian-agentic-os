@@ -28,3 +28,12 @@ plugin is **desktop-only**. `dayplan` reads through Obsidian's own vault APIs.
 
 Token Burn and Schedule each had a follow-up slice (live-repaint, 12-hour times);
 those are folded into their PRDs above.
+
+## In progress
+
+| PRD | Panel(s) | Source module | Status |
+|-----|----------|---------------|--------|
+| [Morning Brief](prd-morning-brief.md) | Morning Brief — Headlines · Reading Queue · Note Opportunities (𝕏 Conversation deferred) | `brief.ts` (planned) + a `/morning-brief` command | draft |
+
+First Research-tab panel to go live; mirrors the Schedule + Tasks pattern (a headless
+command writes `brief:` into today's daily note, the plugin paints it).

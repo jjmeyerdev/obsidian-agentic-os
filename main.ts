@@ -564,6 +564,16 @@ class AgenticOSView extends ItemView {
 		this.paintTasks(this.root, this.dayPlan);
 	}
 
+	/** "13:00" → "1:00 PM", "09:05" → "9:05 AM"; all-day "" stays blank; malformed passes through. */
+	private to12h(t: string): string {
+		const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+		if (!m) return t;
+		let h = Number(m[1]);
+		const ampm = h < 12 ? "AM" : "PM";
+		h = h % 12 || 12;
+		return `${h}:${m[2]} ${ampm}`;
+	}
+
 	private paintSchedule(root: HTMLElement, plan: DayPlan): void {
 		const grid = root.querySelector<HTMLElement>(".schedule-grid");
 		const meta = root.querySelector<HTMLElement>(".schedule-panel .panel__meta");
@@ -577,7 +587,7 @@ class AgenticOSView extends ItemView {
 		}
 		for (const e of plan.schedule) {
 			const row = grid.createDiv({ cls: "schedule-row" });
-			row.createSpan({ cls: "schedule-row__time", text: e.time });
+			row.createSpan({ cls: "schedule-row__time", text: this.to12h(e.time) });
 			row.createSpan({ cls: "schedule-row__name", text: e.label });
 		}
 		const n = plan.schedule.length;

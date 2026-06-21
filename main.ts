@@ -16,6 +16,7 @@ import {
 	listProjectFolders,
 	ProjectFolder,
 } from "./session";
+import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "./dayplan";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -96,6 +97,12 @@ const TOKEN_BURN_INTERVAL_MS = 60_000;
 /** GitHub stat-card refresh cadence — far slower than Token Burn: these figures
  *  drift over days, and the star-history pass makes a request per starred repo. */
 const GITHUB_INTERVAL_MS = 30 * 60_000;
+
+/** Decorative checkmark glyph for a painted task row — matches the static markup's
+ *  `.task-box` svg (CSS reveals it when the row's checkbox is checked). Constant and
+ *  trusted, so it's the one bit of innerHTML in the otherwise DOM-built task rows. */
+const TASK_CHECK_SVG =
+	'<svg viewBox="0 0 12 12"><path d="M2 6.2l2.6 2.6L10 3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 /** Per-window length (for aligning the token sum to the snapshot's window) and
  *  display label. Lengths are fixed by Anthropic's limits, not user-tunable. */
@@ -232,6 +239,9 @@ class AgenticOSView extends ItemView {
 	private reposToken = 0;
 	/** Projects data is fetched lazily on first tab view, then kept fresh. */
 	private projectsLoaded = false;
+	/** Last-read day plan (today's daily note), kept so task write-back handlers have the
+	 *  backing file + index mapping. No stale-paint token: the read is synchronous. */
+	private dayPlan: DayPlan | null = null;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: AgenticOSPlugin) {
 		super(leaf);
@@ -260,6 +270,7 @@ class AgenticOSView extends ItemView {
 			window.setInterval(() => {
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
+				this.refreshDayPlan();
 			}, TOKEN_BURN_INTERVAL_MS),
 		);
 		this.registerInterval(
@@ -275,8 +286,18 @@ class AgenticOSView extends ItemView {
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
 				void this.refreshGitHub();
+				this.refreshDayPlan();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 				if (this.state === "full-sessions") void this.refreshFolderSessions();
+			}),
+		);
+		// Repaint Schedule + Tasks the moment today's daily note changes on disk — covers
+		// both a `plan-today` run writing it and our own task write-back.
+		this.registerEvent(
+			this.app.metadataCache.on("changed", (file) => {
+				if (this.state === "dashboard" && file.path === todayDailyNotePath(this.app)) {
+					this.refreshDayPlan();
+				}
 			}),
 		);
 	}
@@ -314,6 +335,7 @@ class AgenticOSView extends ItemView {
 			void this.refreshTokenBurn();
 			void this.refreshLatestSession();
 			void this.refreshGitHub();
+			this.refreshDayPlan();
 			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
 		} else {
@@ -526,6 +548,101 @@ class AgenticOSView extends ItemView {
 		const chips = card.querySelectorAll<HTMLElement>(".latest-session__meta .chip");
 		setChip(chips[0] ?? null, s.ok && s.branch !== "HEAD" ? s.branch : null);
 		setChip(chips[1] ?? null, s.ok ? s.cwd : null);
+	}
+
+	/** Read today's daily note and paint the Schedule + Daily Tasks panels. Synchronous
+	 *  (metadata cache is in-memory), so no stale-paint token is needed. No-op off the
+	 *  dashboard. */
+	refreshDayPlan(): void {
+		if (!this.root || this.state !== "dashboard") return;
+		this.dayPlan = readDayPlan(this.app);
+		this.paintSchedule(this.root, this.dayPlan);
+		this.paintTasks(this.root, this.dayPlan);
+	}
+
+	private paintSchedule(root: HTMLElement, plan: DayPlan): void {
+		const grid = root.querySelector<HTMLElement>(".schedule-grid");
+		const meta = root.querySelector<HTMLElement>(".schedule-panel .panel__meta");
+		if (!grid) return;
+		grid.empty();
+
+		if (!plan.ok || plan.schedule.length === 0) {
+			grid.createDiv({ cls: "schedule-empty", text: plan.ok ? "No events today" : "▶ Run Plan Today" });
+			if (meta) meta.textContent = "↻ 0 events";
+			return;
+		}
+		for (const e of plan.schedule) {
+			const row = grid.createDiv({ cls: "schedule-row" });
+			row.createSpan({ cls: "schedule-row__time", text: e.time });
+			row.createSpan({ cls: "schedule-row__name", text: e.label });
+		}
+		const n = plan.schedule.length;
+		if (meta) meta.textContent = `↻ ${n} event${n === 1 ? "" : "s"}`;
+	}
+
+	private paintTasks(root: HTMLElement, plan: DayPlan): void {
+		const grid = root.querySelector<HTMLElement>(".task-grid");
+		const meta = root.querySelector<HTMLElement>(".tasks-panel .panel__meta");
+		const fill = root.querySelector<HTMLElement>(".tasks-panel .task-progress__fill");
+		const addBtn = root.querySelector<HTMLElement>(".tasks-panel .task-add");
+		if (!grid) return;
+		grid.empty();
+
+		if (!plan.ok) {
+			grid.createDiv({ cls: "task-empty", text: "▶ Run Plan Today" });
+			if (meta) meta.textContent = "—";
+			if (fill) fill.style.width = "0%";
+			if (addBtn) addBtn.style.display = "none";
+			return;
+		}
+		if (addBtn) addBtn.style.display = "";
+
+		// Row index = frontmatter `tasks` index, so the change handler writes the right one.
+		plan.tasks.forEach((t, i) => {
+			const rowEl = grid.createEl("label", { cls: t.carryover ? "task-row task-row--carry" : "task-row" });
+			const cb = rowEl.createEl("input", { cls: "task-check", attr: { type: "checkbox" } });
+			cb.checked = t.done;
+			cb.dataset.taskIndex = String(i);
+			const box = rowEl.createSpan({ cls: "task-box", attr: { "aria-hidden": "true" } });
+			box.innerHTML = TASK_CHECK_SVG;
+			const labelEl = rowEl.createSpan({ cls: "task-label", text: t.label + " " });
+			if (t.carryover) labelEl.createSpan({ cls: "task-tag", text: "carryover" });
+		});
+
+		const done = plan.tasks.filter((t) => t.done).length;
+		const total = plan.tasks.length;
+		if (meta) meta.textContent = `${done}/${total}`;
+		if (fill) fill.style.width = total ? `${(done / total) * 100}%` : "0%";
+	}
+
+	/** Delegated wiring for the Daily Tasks panel — attached once per render off the
+	 *  (static) panel container, so it survives the row repaints `paintTasks` does. */
+	private wireDayPlan(root: HTMLElement): void {
+		const panel = root.querySelector<HTMLElement>(".tasks-panel");
+		if (!panel) return;
+
+		// Toggling a checkbox writes `done` back to the daily note frontmatter; the
+		// metadata-cache watcher then repaints (progress meter, etc.).
+		this.on(panel, "change", (ev) => {
+			const cb = (ev.target as HTMLElement).closest<HTMLInputElement>(".task-check");
+			const file = this.dayPlan?.file;
+			if (!cb || !file) return;
+			const idx = Number(cb.dataset.taskIndex);
+			if (Number.isNaN(idx)) return;
+			void setTaskDone(this.app, file, idx, cb.checked);
+		});
+
+		const addBtn = panel.querySelector<HTMLElement>(".task-add");
+		if (addBtn) {
+			this.on(addBtn, "click", () => {
+				const file = this.dayPlan?.file;
+				if (!file) {
+					new Notice("No daily note for today yet — run Plan Today first.");
+					return;
+				}
+				void addTask(this.app, file).then(() => this.app.workspace.getLeaf(true).openFile(file));
+			});
+		}
 	}
 
 	/** Read every session in the card's folder and paint the full sessions list. No-op
@@ -880,6 +997,7 @@ class AgenticOSView extends ItemView {
 		}
 
 		this.wireQuickActions(root);
+		this.wireDayPlan(root);
 	}
 
 	/** Each Quick Action button runs the Obsidian command (typically a Shell Commands

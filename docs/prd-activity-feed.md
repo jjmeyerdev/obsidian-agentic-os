@@ -1,6 +1,6 @@
 # PRD — Activity Feed (live slice)
 
-**Status:** draft
+**Status:** shipped (PR #12)
 **Slice:** dashboard-live effort — Overview tab, panel ⑥
 **Date:** 2026-06-22
 

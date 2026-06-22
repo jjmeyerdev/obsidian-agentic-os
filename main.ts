@@ -1,4 +1,4 @@
-import { addIcon, App, ItemView, Modal, normalizePath, Notice, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import { addIcon, App, ItemView, Modal, moment, normalizePath, Notice, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import {
 	DASHBOARD_MARKUP,
 	FULL_SESSIONS_MARKUP,
@@ -17,6 +17,7 @@ import {
 	ProjectFolder,
 } from "./session";
 import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "./dayplan";
+import { readBrief, Brief } from "./brief";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -271,6 +272,7 @@ class AgenticOSView extends ItemView {
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
 				this.refreshDayPlan();
+				this.refreshBrief();
 			}, TOKEN_BURN_INTERVAL_MS),
 		);
 		this.registerInterval(
@@ -287,17 +289,19 @@ class AgenticOSView extends ItemView {
 				void this.refreshLatestSession();
 				void this.refreshGitHub();
 				this.refreshDayPlan();
+				this.refreshBrief();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 				if (this.state === "full-sessions") void this.refreshFolderSessions();
 			}),
 		);
-		// Repaint Schedule + Tasks the moment today's daily note changes on disk — covers
-		// both a `plan-today` run writing it and our own task write-back.
+		// Repaint Schedule + Tasks + Morning Brief the moment today's daily note changes on
+		// disk — covers a `plan-today` / `morning-brief` run writing it and our own task
+		// write-back. Both refreshers self-guard on the current view state.
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file) => {
-				if (this.state === "dashboard" && file.path === todayDailyNotePath(this.app)) {
-					this.refreshDayPlan();
-				}
+				if (file.path !== todayDailyNotePath(this.app)) return;
+				this.refreshDayPlan();
+				this.refreshBrief();
 			}),
 		);
 		// Repaint Token Burn the instant the usage snapshot is rewritten — e.g. the
@@ -340,6 +344,7 @@ class AgenticOSView extends ItemView {
 			void this.refreshLatestSession();
 			void this.refreshGitHub();
 			this.refreshDayPlan();
+			this.refreshBrief();
 			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
 		} else {
@@ -353,6 +358,7 @@ class AgenticOSView extends ItemView {
 				this.showSessionsSkeleton(this.root);
 				void this.refreshFolderSessions();
 			}
+			if (this.state === "full-brief") this.refreshBrief();
 		}
 	}
 
@@ -657,6 +663,106 @@ class AgenticOSView extends ItemView {
 				void addTask(this.app, file).then(() => this.app.workspace.getLeaf(true).openFile(file));
 			});
 		}
+	}
+
+	/** Read today's daily-note `brief:` and paint the Morning Brief panels — the dashboard
+	 *  card and the full view share the `.brief__panel` classes. Synchronous like
+	 *  refreshDayPlan; no stale-paint token. No-op off the brief views. */
+	refreshBrief(): void {
+		if (!this.root) return;
+		if (this.state !== "dashboard" && this.state !== "full-brief") return;
+		this.paintBrief(this.root, readBrief(this.app));
+	}
+
+	private paintBrief(root: HTMLElement, b: Brief): void {
+		// The card shows a few items per panel; the full view shows them all.
+		const cap = this.state === "dashboard" ? 3 : Infinity;
+
+		// Date slot: the card's .brief__date, the full view's .full-bar__meta.
+		const date = b.generated ? b.generated.slice(0, 10) : moment().format("YYYY-MM-DD");
+		const dateEl = root.querySelector<HTMLElement>(".brief__date");
+		if (dateEl) dateEl.textContent = date;
+		const barMeta = root.querySelector<HTMLElement>(".full-bar__meta");
+		if (barMeta) barMeta.textContent = date;
+
+		const box = (label: string, inner: string): HTMLElement | null =>
+			root.querySelector<HTMLElement>(`.brief__panel[aria-label="${label}"] ${inner}`);
+		const cta = "▶ Run Morning Brief";
+
+		// HEADLINES
+		const hbox = box("Headlines", ".brief__bullets");
+		if (hbox) {
+			hbox.empty();
+			if (!b.has) hbox.createDiv({ cls: "brief-empty", text: cta });
+			else if (b.headlines.length === 0) hbox.createDiv({ cls: "brief-empty", text: "No headlines" });
+			else for (const h of b.headlines.slice(0, cap)) hbox.createDiv({ cls: "brief__bullet", text: h.text });
+		}
+
+		// READING QUEUE
+		const rbox = box("Reading queue", ".reading-list");
+		if (rbox) {
+			rbox.empty();
+			if (!b.has) rbox.createDiv({ cls: "brief-empty", text: cta });
+			else if (b.reading.length === 0) rbox.createDiv({ cls: "brief-empty", text: "Reading queue empty" });
+			else for (const r of b.reading.slice(0, cap)) {
+				const item = rbox.createDiv({ cls: "reading-item" });
+				item.createSpan({ cls: "reading-item__title", text: r.title });
+				const m = item.createSpan({ cls: "reading-item__meta" });
+				if (r.src) m.createSpan({ cls: "reading-item__src", text: r.src });
+				if (r.meta) m.createSpan({ cls: "reading-item__time", text: r.meta });
+			}
+		}
+
+		// NOTE OPPORTUNITIES
+		const nbox = box("Note opportunities", ".opp-list");
+		if (nbox) {
+			nbox.empty();
+			if (!b.has) nbox.createDiv({ cls: "brief-empty", text: cta });
+			else if (b.notes.length === 0) nbox.createDiv({ cls: "brief-empty", text: "No note opportunities" });
+			else b.notes.slice(0, cap).forEach((text, i) => {
+				const item = nbox.createDiv({ cls: "opp-item" });
+				item.createSpan({ cls: "opp-item__num", text: String(i + 1) });
+				item.createSpan({ cls: "opp-item__text", text });
+			});
+		}
+
+		// 𝕏 CONVERSATION — deferred slice; a placeholder until a later slice wires it.
+		const xbox = box("X conversation", ".x-list");
+		if (xbox) {
+			xbox.empty();
+			xbox.createDiv({ cls: "brief-empty", text: "𝕏 Conversation — coming soon" });
+		}
+
+		// Counts — dashboard header (.brief__count b) and full toolbar (.full-chip__n), both
+		// ordered [Headlines, Reading, 𝕏, Notes]; 𝕏 is deferred → 0. Only one selector set
+		// exists per layout; the other no-ops.
+		const nums = [b.headlines.length, b.reading.length, 0, b.notes.length];
+		const setCounts = (els: HTMLElement[]): void => {
+			if (els.length >= 4) els.forEach((el, i) => (el.textContent = String(nums[i])));
+		};
+		setCounts(Array.from(root.querySelectorAll<HTMLElement>(".brief__counts .brief__count b")));
+		setCounts(Array.from(root.querySelectorAll<HTMLElement>(".full-chip__n")));
+
+		const total = b.headlines.length + b.reading.length + b.notes.length;
+		const fc = root.querySelector<HTMLElement>(".full-count");
+		if (fc) fc.textContent = `${total} item${total === 1 ? "" : "s"}`;
+	}
+
+	/** Regenerate the brief by running the "Morning Brief" Quick Action command (a Shell
+	 *  Commands command that writes today's note); the daily-note watcher repaints when it
+	 *  lands. Mirrors wireQuickActions' execute path. */
+	private runMorningBrief(): void {
+		const id = parseQuickActions(this.plugin.settings.quickActions).get("Morning Brief");
+		if (!id) {
+			new Notice('No command mapped for "Morning Brief". Add one in Agentic OS settings.');
+			return;
+		}
+		const ok = (this.app as any).commands?.executeCommandById(id);
+		if (!ok) {
+			new Notice(`Command not found: ${id} — check Agentic OS settings.`);
+			return;
+		}
+		new Notice("Morning Brief — generating…");
 	}
 
 	/** Read every session in the card's folder and paint the full sessions list. No-op
@@ -1012,6 +1118,11 @@ class AgenticOSView extends ItemView {
 
 		this.wireQuickActions(root);
 		this.wireDayPlan(root);
+
+		// The brief card's ⟳ regenerates the brief (same command as the "Morning Brief"
+		// quick action); the painted panels refresh from disk when the note is rewritten.
+		const briefRefresh = root.querySelector<HTMLElement>(".brief .icon-btn");
+		if (briefRefresh) this.on(briefRefresh, "click", () => this.runMorningBrief());
 	}
 
 	/** Each Quick Action button runs the Obsidian command (typically a Shell Commands

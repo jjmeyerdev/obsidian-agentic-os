@@ -651,14 +651,16 @@ class AgenticOSView extends ItemView {
 		this.paintTasks(this.root, this.dayPlan);
 	}
 
-	/** "13:00" → "1:00 PM", "09:05" → "9:05 AM"; all-day "" stays blank; malformed passes through. */
+	/** "13:00" → "1:00 PM", "09:05" → " 9:05 AM"; all-day "" stays blank; malformed passes
+	 *  through. Single-digit hours are padded with a figure space (U+2007, a digit's width)
+	 *  so the colons/minutes line up under two-digit hours like "12:00 PM". */
 	private to12h(t: string): string {
 		const m = /^(\d{1,2}):(\d{2})$/.exec(t);
 		if (!m) return t;
 		let h = Number(m[1]);
 		const ampm = h < 12 ? "AM" : "PM";
 		h = h % 12 || 12;
-		return `${h}:${m[2]} ${ampm}`;
+		return `${h < 10 ? "\u2007" : ""}${h}:${m[2]} ${ampm}`;
 	}
 
 	private paintSchedule(root: HTMLElement, plan: DayPlan): void {

@@ -19,6 +19,7 @@ import {
 import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "./dayplan";
 import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
+import { readHackerNews, HNStory, HNKind } from "./hn";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -99,6 +100,15 @@ const TOKEN_BURN_INTERVAL_MS = 60_000;
 /** GitHub stat-card refresh cadence — far slower than Token Burn: these figures
  *  drift over days, and the star-history pass makes a request per starred repo. */
 const GITHUB_INTERVAL_MS = 30 * 60_000;
+
+/** Hacker News refresh cadence — the front page turns over slowly, and this fetches
+ *  one request per story, so keep it well off the 60s heartbeat. */
+const HN_INTERVAL_MS = 10 * 60_000;
+
+/** Stories shown on the dashboard card vs. the full "Hacker News" view. The full read
+ *  is a superset, so it's cached and the card just slices the first few. */
+const HN_CARD_LIMIT = 5;
+const HN_FULL_LIMIT = 30;
 
 /** How many run-log entries the Activity Feed shows — the designer's row count. */
 const ACTIVITY_LIMIT = 8;
@@ -264,6 +274,14 @@ class AgenticOSView extends ItemView {
 	private folderSessions: LatestSession[] = [];
 	private sessionsSortMode = 0;
 	private sessionsFilter = "";
+	/** Stale-paint guard for the Hacker News fetch (dashboard card + full view). */
+	private hnToken = 0;
+	/** Cached HN stories (top 30), so opening the full view paints instantly and the
+	 *  chips/search filter from cache without refetching. */
+	private hnStories: HNStory[] = [];
+	/** Full HN view toolbar state: active chip and the search box text. */
+	private hnChip: "top" | "new" | HNKind = "top";
+	private hnFilter = "";
 	/** Stale-paint guard for the Projects tab (heaviest fetch — commit history). */
 	private projectsToken = 0;
 	/** Stale-paint guard for the light repos-only refresh (on tab open). */
@@ -312,6 +330,7 @@ class AgenticOSView extends ItemView {
 				if (this.projectsLoaded) void this.refreshProjects();
 			}, GITHUB_INTERVAL_MS),
 		);
+		this.registerInterval(window.setInterval(() => void this.refreshHackerNews(), HN_INTERVAL_MS));
 		// ...plus an instant repaint whenever this pane becomes the active leaf.
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -322,6 +341,7 @@ class AgenticOSView extends ItemView {
 				void this.refreshGitHub();
 				this.refreshDayPlan();
 				this.refreshBrief();
+				void this.refreshHackerNews();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 				if (this.state === "full-sessions") void this.refreshFolderSessions();
 			}),
@@ -378,10 +398,20 @@ class AgenticOSView extends ItemView {
 			void this.refreshGitHub();
 			this.refreshDayPlan();
 			this.refreshBrief();
+			void this.refreshHackerNews();
 			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
 		} else {
 			this.wireFullView(this.root);
+			if (this.state === "full-hn") {
+				// Fresh entry starts on the "Top" chip with an empty search, matching the
+				// markup's is-active chip and empty search box.
+				this.hnChip = "top";
+				this.hnFilter = "";
+				// Shimmer over the placeholder rows until the fetch (or the cache) paints.
+				this.showHNSkeleton(this.root);
+				void this.refreshHackerNews();
+			}
 			if (this.state === "full-sessions") {
 				// Fresh entry starts unsorted-from-newest and unfiltered, matching the
 				// markup's empty search box and "Sort: Recent" default.
@@ -956,6 +986,145 @@ class AgenticOSView extends ItemView {
 		);
 	}
 
+	/** Fetch the top HN stories and paint whichever Research view is showing — the
+	 *  dashboard card (top 5) or the full list (top 30 with chips + search). The full
+	 *  read is a superset, so it's cached: the card slices it, the toolbar filters it. */
+	async refreshHackerNews(): Promise<void> {
+		if (!this.root || (this.state !== "dashboard" && this.state !== "full-hn")) return;
+		const ticket = ++this.hnToken;
+
+		const feed = await readHackerNews(HN_FULL_LIMIT, Date.now());
+
+		if (!this.root || ticket !== this.hnToken) return;
+		if (this.state === "dashboard") {
+			if (!feed.ok && this.hnStories.length === 0) {
+				this.paintHNError(this.root);
+				return;
+			}
+			if (feed.ok) this.hnStories = feed.stories;
+			this.paintHNCard(this.root);
+		} else if (this.state === "full-hn") {
+			if (!feed.ok && this.hnStories.length === 0) {
+				this.paintHNError(this.root);
+				return;
+			}
+			if (feed.ok) this.hnStories = feed.stories;
+			this.renderHNList(this.root);
+		}
+	}
+
+	/** Paint the dashboard's Hacker News card: the first few stories as compact rows
+	 *  (title + points, no meta line) and a fresh date stamp. */
+	private paintHNCard(root: HTMLElement): void {
+		const card = root.querySelector<HTMLElement>('.card[aria-label="Hacker News"]');
+		if (!card) return;
+		const date = card.querySelector<HTMLElement>(".rsrch-date");
+		if (date) date.textContent = moment().format("YYYY-MM-DD");
+		const list = card.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		const rows = this.hnStories.slice(0, HN_CARD_LIMIT);
+		list.innerHTML = rows.length
+			? rows.map((s, i) => this.hnRowHtml(s, i + 1, false)).join("")
+			: '<div class="rank-row"><div class="rank-row__body"><div class="rank-row__desc">No stories right now.</div></div></div>';
+	}
+
+	/** Apply the active chip + search to the cached stories and paint the full list,
+	 *  the chip counts, the result count, and the "updated" meta. */
+	private renderHNList(root: HTMLElement): void {
+		const q = this.hnFilter.trim().toLowerCase();
+		const matchesSearch = (s: HNStory) =>
+			!q || s.title.toLowerCase().includes(q) || s.domain.toLowerCase().includes(q);
+
+		let rows = this.hnStories.filter((s) => {
+			if (this.hnChip === "show" && s.kind !== "show") return false;
+			if (this.hnChip === "ask" && s.kind !== "ask") return false;
+			return matchesSearch(s);
+		});
+		// "New" keeps every story but re-orders newest-first; the others stay in HN rank.
+		if (this.hnChip === "new") rows = rows.slice().sort((a, b) => b.time - a.time);
+
+		// Chip counts reflect the search-filtered pool so the numbers track the list.
+		const pool = this.hnStories.filter(matchesSearch);
+		const counts = [
+			pool.length, // Top
+			pool.filter((s) => s.kind === "show").length, // Show HN
+			pool.filter((s) => s.kind === "ask").length, // Ask HN
+			pool.length, // New (same pool, re-sorted)
+		];
+		const chipNums = Array.from(root.querySelectorAll<HTMLElement>(".full-chip__n"));
+		chipNums.forEach((el, i) => {
+			if (i < counts.length) el.textContent = String(counts[i]);
+		});
+
+		const meta = root.querySelector<HTMLElement>(".full-bar__meta");
+		if (meta) meta.textContent = `updated ${moment().format("YYYY-MM-DD · HH:mm")}`;
+		const date = root.querySelector<HTMLElement>(".rsrch-date");
+		if (date) date.textContent = `top ${this.hnStories.length} by points`;
+		const count = root.querySelector<HTMLElement>(".full-count");
+		if (count) count.textContent = `${rows.length} ${rows.length === 1 ? "story" : "stories"}`;
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading");
+		list.innerHTML = rows.length
+			? rows.map((s, i) => this.hnRowHtml(s, i + 1, true)).join("")
+			: `<div class="rank-row"><div class="rank-row__body"><div class="rank-row__desc">${
+					this.hnStories.length ? "No stories match your filter." : "No stories right now."
+			  }</div></div></div>`;
+	}
+
+	/** One HN rank-row: ordinal, title + points, optionally a domain · comments · age
+	 *  meta line. The row carries the URL so the list's delegated click can open it. */
+	private hnRowHtml(s: HNStory, num: number, withDesc: boolean): string {
+		const pts = `${s.score.toLocaleString("en-US")}↑`;
+		const desc = withDesc
+			? `<div class="rank-row__desc">${this.esc(s.domain)} · ${s.comments.toLocaleString(
+					"en-US",
+			  )} comments · ${this.esc(s.age)}</div>`
+			: "";
+		return (
+			`<div class="rank-row" data-url="${this.esc(s.url)}" data-title="${this.esc(
+				s.title,
+			)}" role="link" tabindex="0">` +
+			`<span class="rank-row__num">${num}</span>` +
+			'<div class="rank-row__body">' +
+			`<div class="rank-row__line1">${this.esc(s.title)}<span class="rank-row__pts">${this.esc(
+				pts,
+			)}</span></div>` +
+			desc +
+			"</div></div>"
+		);
+	}
+
+	/** Swap the rank-list for shimmering skeleton rows while the first HN fetch runs. */
+	private showHNSkeleton(root: HTMLElement): void {
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.add("is-loading");
+		const row =
+			'<div class="rank-row"><span class="rank-row__num"></span>' +
+			'<div class="rank-row__body"><div class="rank-row__line1"></div>' +
+			'<div class="rank-row__desc"></div></div></div>';
+		list.innerHTML = row.repeat(10);
+	}
+
+	/** Render the designed error state into the active Research view's rank-list, with a
+	 *  Retry that refetches. Used only when nothing has painted yet (no cached stories). */
+	private paintHNError(root: HTMLElement): void {
+		const card =
+			this.state === "dashboard"
+				? root.querySelector<HTMLElement>('.card[aria-label="Hacker News"]')
+				: root;
+		const list = card?.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading");
+		list.empty();
+		const err = list.createDiv({ cls: "state-error" });
+		err.createSpan({ cls: "state-error__msg", text: "Couldn't reach Hacker News" });
+		const retry = err.createEl("button", { cls: "state-error__retry", text: "Retry", attr: { type: "button" } });
+		this.on(retry, "click", () => void this.refreshHackerNews());
+	}
+
 	/** Fetch + paint the Projects ("GitHub Activity") tab. Heaviest read (per-repo
 	 *  commit history), so it's lazy: triggered on first tab view, then kept fresh. */
 	async refreshProjects(): Promise<void> {
@@ -1206,6 +1375,15 @@ class AgenticOSView extends ItemView {
 		// quick action); the painted panels refresh from disk when the note is rewritten.
 		const briefRefresh = root.querySelector<HTMLElement>(".brief .icon-btn");
 		if (briefRefresh) this.on(briefRefresh, "click", () => this.runMorningBrief());
+
+		// Hacker News card: its ⟳ refetches; clicking a (async-painted) story opens it.
+		const hnCard = root.querySelector<HTMLElement>('.card[aria-label="Hacker News"]');
+		if (hnCard) {
+			const hnRefresh = hnCard.querySelector<HTMLElement>(".icon-btn");
+			if (hnRefresh) this.on(hnRefresh, "click", () => void this.refreshHackerNews());
+			const list = hnCard.querySelector<HTMLElement>(".rank-list");
+			if (list) this.wireHNRows(list);
+		}
 	}
 
 	/** Each Quick Action button runs the Obsidian command (typically a Shell Commands
@@ -1245,6 +1423,54 @@ class AgenticOSView extends ItemView {
 			this.on(back, "click", () => this.navigate("dashboard"));
 		}
 		if (this.state === "full-sessions") this.wireSessionsToolbar(root);
+		if (this.state === "full-hn") this.wireHNToolbar(root);
+	}
+
+	/** The Hacker News list toolbar: the chips switch the filter (Top/Show/Ask/New), the
+	 *  search box filters by title/domain, and clicking a story opens it. All repaint from
+	 *  the cached stories — no refetch. */
+	private wireHNToolbar(root: HTMLElement): void {
+		const chips = Array.from(root.querySelectorAll<HTMLButtonElement>(".full-chip"));
+		// Chips are in DOM order: Top, Show HN, Ask HN, New.
+		const order: Array<"top" | HNKind | "new"> = ["top", "show", "ask", "new"];
+		chips.forEach((chip, i) => {
+			const kind = order[i];
+			if (!kind) return;
+			this.on(chip, "click", () => {
+				this.hnChip = kind;
+				for (const c of chips) c.classList.toggle("is-active", c === chip);
+				this.renderHNList(root);
+			});
+		});
+
+		const search = root.querySelector<HTMLInputElement>(".full-search input");
+		if (search) {
+			this.on(search, "input", () => {
+				this.hnFilter = search.value;
+				this.renderHNList(root);
+			});
+		}
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (list) this.wireHNRows(list);
+	}
+
+	/** Delegate clicks/Enter on a (re-painted) HN rank-list to open the story's URL in
+	 *  the embedded browser tab — the rows carry their URL in data-url. */
+	private wireHNRows(list: HTMLElement): void {
+		const open = (ev: Event): void => {
+			const row = (ev.target as HTMLElement).closest<HTMLElement>("[data-url]");
+			const url = row?.getAttribute("data-url");
+			if (url) void this.openRepo(url, row?.getAttribute("data-title") ?? "Hacker News");
+		};
+		this.on(list, "click", open);
+		this.on(list, "keydown", (ev) => {
+			const e = ev as KeyboardEvent;
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				open(ev);
+			}
+		});
 	}
 
 	/** The sessions list toolbar: the "Sort:" button cycles orders, the search box

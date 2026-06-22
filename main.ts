@@ -131,6 +131,7 @@ const ACTIVITY_BADGE_VARIANT: Record<string, string> = {
 	review: "badge--pos",
 	research: "badge--accent",
 	brief: "badge--accent",
+	inbox: "badge--accent",
 	atomize: "badge--accent",
 	plan: "badge--neutral",
 	cleanup: "badge--neutral",

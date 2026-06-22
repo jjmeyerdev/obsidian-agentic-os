@@ -1867,6 +1867,74 @@
   color: var(--text-muted);
 }
 
+.agentic-os .brief__panel--wide { grid-column: 1 / -1; }
+
+/* INBOX — live GitHub notifications + email; badge · title · source/account/time.
+   Plugin clears .inbox-list and paints .inbox-item rows (data-kind = github | email). */
+.agentic-os .inbox__count {
+  font-family: var(--font-label);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: var(--track-badge);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.agentic-os .inbox__count b { margin-left: 5px; color: var(--accent); font-weight: 600; }
+
+.agentic-os .inbox-list { display: flex; flex-direction: column; gap: 12px; }
+.agentic-os .inbox-item { display: flex; align-items: flex-start; gap: 10px; }
+.agentic-os .inbox-item__badge {
+  flex: none;
+  margin-top: 2px;
+  font-family: var(--font-label);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: var(--track-badge);
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: var(--border) solid rgba(34,211,238,0.25);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.agentic-os .inbox-item[data-kind="email"] .inbox-item__badge {
+  color: var(--glyph-followers);
+  background: rgba(88,166,255,0.12);
+  border-color: rgba(88,166,255,0.28);
+}
+.agentic-os .inbox-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.agentic-os .inbox-item__title {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+.agentic-os .inbox-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-label);
+  font-size: 10px;
+  letter-spacing: var(--track-badge);
+  color: var(--text-dim);
+}
+.agentic-os .inbox-item__account { color: var(--text-muted); }
+.agentic-os .inbox-item__time { color: var(--accent); }
+
+/* empty / unauthed state — plugin paints this for ok:false and inbox-zero */
+.agentic-os .brief-empty {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  padding: 2px 0;
+}
+
 /* ── component states: loading · empty · error ──────────────── */
 .agentic-os .skel-row {
   height: 12px;

@@ -1,4 +1,4 @@
-import { addIcon, App, ItemView, Modal, moment, normalizePath, Notice, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import { addIcon, App, FileSystemAdapter, ItemView, Modal, moment, normalizePath, Notice, Plugin, PluginSettingTab, Setting, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import {
 	DASHBOARD_MARKUP,
 	FULL_SESSIONS_MARKUP,
@@ -18,6 +18,7 @@ import {
 } from "./session";
 import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "./dayplan";
 import { readBrief, Brief } from "./brief";
+import { readActivity, ActivityRun } from "./activity";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -98,6 +99,22 @@ const TOKEN_BURN_INTERVAL_MS = 60_000;
 /** GitHub stat-card refresh cadence — far slower than Token Burn: these figures
  *  drift over days, and the star-history pass makes a request per starred repo. */
 const GITHUB_INTERVAL_MS = 30 * 60_000;
+
+/** How many run-log entries the Activity Feed shows — the designer's row count. */
+const ACTIVITY_LIMIT = 8;
+
+/** Run type → badge variant, matching the mockup's three styles. Unknown types
+ *  default to neutral so a new command's runs still render. */
+const ACTIVITY_BADGE_VARIANT: Record<string, string> = {
+	metrics: "badge--pos",
+	pipeline: "badge--pos",
+	review: "badge--pos",
+	research: "badge--accent",
+	brief: "badge--accent",
+	atomize: "badge--accent",
+	plan: "badge--neutral",
+	cleanup: "badge--neutral",
+};
 
 /** Decorative checkmark glyph for a painted task row — matches the static markup's
  *  `.task-box` svg (CSS reveals it when the row's checkbox is checked). Constant and
@@ -188,6 +205,17 @@ function formatSessionAge(ms: number): string {
 	return Math.round(h / 24) + "d old";
 }
 
+/** Compact activity-row age, matching the mockup's bare style: "now", "2m", "1h", "3d". */
+function formatActivityAge(ms: number): string {
+	const s = Math.max(0, Math.round(ms / 1000));
+	if (s < 60) return "now";
+	const m = Math.round(s / 60);
+	if (m < 60) return m + "m";
+	const h = Math.round(m / 60);
+	if (h < 24) return h + "h";
+	return Math.round(h / 24) + "d";
+}
+
 /** Reset countdown, e.g. "5d 3h left" / "4h 12m left" / "37m left". */
 function formatCountdown(ms: number): string {
 	if (ms <= 0) return "resetting…";
@@ -227,6 +255,8 @@ class AgenticOSView extends ItemView {
 	private ghToken = 0;
 	/** Stale-paint guard for the Latest Session card. */
 	private sessionToken = 0;
+	/** Stale-paint guard for the Activity Feed run-log read. */
+	private activityToken = 0;
 	/** Stale-paint guard for the full sessions list ("Full ↗" deep-dive). */
 	private sessionsListToken = 0;
 	/** Full sessions list state: fetched rows (newest-first) plus the toolbar's live
@@ -271,6 +301,7 @@ class AgenticOSView extends ItemView {
 			window.setInterval(() => {
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
+				void this.refreshActivity();
 				this.refreshDayPlan();
 				this.refreshBrief();
 			}, TOKEN_BURN_INTERVAL_MS),
@@ -287,6 +318,7 @@ class AgenticOSView extends ItemView {
 				if (leaf !== this.leaf) return;
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
+				void this.refreshActivity();
 				void this.refreshGitHub();
 				this.refreshDayPlan();
 				this.refreshBrief();
@@ -342,6 +374,7 @@ class AgenticOSView extends ItemView {
 			this.wireDashboard(this.root);
 			void this.refreshTokenBurn();
 			void this.refreshLatestSession();
+			void this.refreshActivity();
 			void this.refreshGitHub();
 			this.refreshDayPlan();
 			this.refreshBrief();
@@ -558,6 +591,54 @@ class AgenticOSView extends ItemView {
 		const chips = card.querySelectorAll<HTMLElement>(".latest-session__meta .chip");
 		setChip(chips[0] ?? null, s.ok && s.branch !== "HEAD" ? s.branch : null);
 		setChip(chips[1] ?? null, s.ok ? s.cwd : null);
+	}
+
+	/** Read the vault-root run-log and paint the Activity Feed. No-op unless the dashboard
+	 *  is rendered; guarded against stale paints like the other reads. Needs the vault's
+	 *  absolute path (Node fs), which only the desktop FileSystemAdapter exposes. */
+	async refreshActivity(): Promise<void> {
+		if (!this.root || this.state !== "dashboard") return;
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) return; // Mobile — no fs access.
+		const ticket = ++this.activityToken;
+
+		const runs = await readActivity(adapter.getBasePath(), ACTIVITY_LIMIT);
+
+		if (!this.root || ticket !== this.activityToken) return;
+		this.paintActivity(this.root, runs);
+	}
+
+	private paintActivity(root: HTMLElement, runs: ActivityRun[]): void {
+		const feed = root.querySelector<HTMLElement>(".activity-feed");
+		if (!feed) return;
+		const meta = feed.querySelector<HTMLElement>(".panel__meta");
+
+		// Clear the designer's placeholder rows (everything but the panel head).
+		feed.querySelectorAll(".activity-row").forEach((r) => r.remove());
+
+		if (runs.length === 0) {
+			feed.createDiv({ cls: "activity-empty", text: "No recent runs yet" });
+			if (meta) meta.textContent = "0 runs";
+			return;
+		}
+		// A prior empty paint leaves the empty-state div behind — drop it before repainting.
+		feed.querySelectorAll(".activity-empty").forEach((e) => e.remove());
+
+		for (const run of runs) {
+			const row = feed.createDiv({ cls: "activity-row" });
+			const check = row.createSvg("svg", {
+				cls: "activity-row__check",
+				attr: { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "3", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+			});
+			check.createSvg("path", { attr: { d: "M20 6 9 17l-5-5" } });
+			const variant = ACTIVITY_BADGE_VARIANT[run.type] ?? "badge--neutral";
+			row.createSpan({ cls: `badge ${variant}`, text: run.type });
+			row.createSpan({ cls: "activity-row__msg", text: run.msg });
+			row.createSpan({ cls: "chip", text: "log" });
+			row.createSpan({ cls: "chip", text: "{}" });
+			row.createSpan({ cls: "activity-row__time", text: formatActivityAge(Date.now() - run.ts) });
+		}
+		if (meta) meta.textContent = `${runs.length} run${runs.length === 1 ? "" : "s"}`;
 	}
 
 	/** Read today's daily note and paint the Schedule + Daily Tasks panels. Synchronous

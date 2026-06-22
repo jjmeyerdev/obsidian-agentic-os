@@ -27,13 +27,19 @@ plugin is **desktop-only**. `dayplan` reads through Obsidian's own vault APIs.
 | [Schedule + Daily Tasks](prd-schedule-tasks.md) | Schedule · Daily Tasks | `dayplan.ts` | #7, #9, #13 |
 | [Morning Brief](prd-morning-brief.md) | Morning Brief — Headlines · Reading Queue · Note Opportunities (𝕏 Conversation deferred) | `brief.ts` + a `/morning-brief` command | #11 |
 | [Activity Feed](prd-activity-feed.md) | Overview Activity Feed (panel ⑥) | `activity.ts` + an append-only `.agentic-os/runs.jsonl` | #12 |
+| Hacker News (no PRD — small slice) | Research tab — HN card + full view (chips + search) | `hn.ts` (public HN API via `requestUrl`) | branch `feat/hacker-news` |
 
 Token Burn and Schedule each had follow-up slices, folded into their PRDs above (Token Burn
 live-repaint #8; Schedule 12-hour times #9 and single-digit alignment #13).
 
 ## In progress
 
-_Nothing in progress — every PRD'd slice is shipped._
+[**Release Radar**](prd-release-radar.md) (draft PRD) — the second Research-tab panel:
+live dependency-update tracking across **both** GitHub accounts. Hybrid source model — a
+direct-fetch `radar.ts` owns versions/badges/affected-repos/grouping and stands alone; an
+agentic `/release-radar` command enriches only escalated (breaking/security) rows with a
+plain-English "what changed" line. See the PRD for the resolved decisions and the
+authoring-time questions still open.
 
 Morning Brief was the first Research-tab panel to go live, mirroring the Schedule + Tasks
 pattern (a headless `/morning-brief` writes `brief:` into today's daily note, the plugin

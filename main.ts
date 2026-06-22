@@ -20,6 +20,7 @@ import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "
 import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
 import { readHackerNews, HNStory, HNKind } from "./hn";
+import { readInbox, Inbox } from "./inbox";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -104,6 +105,15 @@ const GITHUB_INTERVAL_MS = 30 * 60_000;
 /** Hacker News refresh cadence — the front page turns over slowly, and this fetches
  *  one request per story, so keep it well off the 60s heartbeat. */
 const HN_INTERVAL_MS = 10 * 60_000;
+
+/** Inbox refresh cadence — live notifications across accounts. Faster than the GitHub
+ *  stat cards (those drift over days) but still well off the 60s heartbeat. */
+const INBOX_INTERVAL_MS = 5 * 60_000;
+
+/** Where the Inbox panel's rows live. The design adds a `.brief__panel[aria-label="Inbox"]`
+ *  containing an `.inbox-list`; until it does, the Inbox refresh no-ops (and skips the
+ *  `gh` fetch entirely), so this slice ships dark until the panel lands in the markup. */
+const INBOX_LIST_SEL = '.brief__panel[aria-label="Inbox"] .inbox-list';
 
 /** Stories shown on the dashboard card vs. the full "Hacker News" view. The full read
  *  is a superset, so it's cached and the card just slices the first few. */
@@ -263,6 +273,8 @@ class AgenticOSView extends ItemView {
 	private burnToken = 0;
 	/** Same stale-paint guard for the (slower) GitHub fetch. */
 	private ghToken = 0;
+	/** Stale-paint guard for the live Inbox fetch (GitHub notifications; Phase 2 email). */
+	private inboxToken = 0;
 	/** Stale-paint guard for the Latest Session card. */
 	private sessionToken = 0;
 	/** Stale-paint guard for the Activity Feed run-log read. */
@@ -331,6 +343,7 @@ class AgenticOSView extends ItemView {
 			}, GITHUB_INTERVAL_MS),
 		);
 		this.registerInterval(window.setInterval(() => void this.refreshHackerNews(), HN_INTERVAL_MS));
+		this.registerInterval(window.setInterval(() => void this.refreshInbox(), INBOX_INTERVAL_MS));
 		// ...plus an instant repaint whenever this pane becomes the active leaf.
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -342,6 +355,7 @@ class AgenticOSView extends ItemView {
 				this.refreshDayPlan();
 				this.refreshBrief();
 				void this.refreshHackerNews();
+				void this.refreshInbox();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 				if (this.state === "full-sessions") void this.refreshFolderSessions();
 			}),
@@ -399,6 +413,7 @@ class AgenticOSView extends ItemView {
 			this.refreshDayPlan();
 			this.refreshBrief();
 			void this.refreshHackerNews();
+			void this.refreshInbox();
 			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
 		} else {
@@ -421,7 +436,10 @@ class AgenticOSView extends ItemView {
 				this.showSessionsSkeleton(this.root);
 				void this.refreshFolderSessions();
 			}
-			if (this.state === "full-brief") this.refreshBrief();
+			if (this.state === "full-brief") {
+				this.refreshBrief();
+				void this.refreshInbox();
+			}
 		}
 	}
 
@@ -859,6 +877,47 @@ class AgenticOSView extends ItemView {
 		const total = b.headlines.length + b.reading.length + b.notes.length;
 		const fc = root.querySelector<HTMLElement>(".full-count");
 		if (fc) fc.textContent = `${total} item${total === 1 ? "" : "s"}`;
+	}
+
+	/** Fetch the live inbox (GitHub notifications across every authed account; Phase 2
+	 *  adds Gmail) and paint it. Gated on the Inbox panel existing in the current markup,
+	 *  so no `gh` work happens until the design lands the panel. Guarded against stale
+	 *  paints like the other async refreshers; no-op off the brief views. */
+	async refreshInbox(): Promise<void> {
+		if (!this.root) return;
+		if (this.state !== "dashboard" && this.state !== "full-brief") return;
+		if (!this.root.querySelector(INBOX_LIST_SEL)) return;
+		const ticket = ++this.inboxToken;
+		const inbox = await readInbox();
+		if (!this.root || ticket !== this.inboxToken) return;
+		this.paintInbox(this.root, inbox);
+	}
+
+	private paintInbox(root: HTMLElement, inbox: Inbox): void {
+		const list = root.querySelector<HTMLElement>(INBOX_LIST_SEL);
+		if (!list) return;
+		// The card shows a few rows; the full view shows them all.
+		const cap = this.state === "dashboard" ? 4 : Infinity;
+		list.empty();
+		if (!inbox.ok) {
+			list.createDiv({ cls: "brief-empty", text: "Sign in with gh to see your inbox" });
+		} else if (inbox.items.length === 0) {
+			list.createDiv({ cls: "brief-empty", text: "Inbox zero — nothing waiting" });
+		} else {
+			for (const it of inbox.items.slice(0, cap)) {
+				const item = list.createDiv({ cls: "inbox-item", attr: { "data-kind": it.kind } });
+				if (it.badge) item.createSpan({ cls: "inbox-item__badge", text: it.badge });
+				const body = item.createDiv({ cls: "inbox-item__body" });
+				body.createSpan({ cls: "inbox-item__title", text: it.title });
+				const m = body.createSpan({ cls: "inbox-item__meta" });
+				if (it.source) m.createSpan({ cls: "inbox-item__source", text: it.source });
+				if (it.account) m.createSpan({ cls: "inbox-item__account", text: it.account });
+				if (it.meta) m.createSpan({ cls: "inbox-item__time", text: it.meta });
+			}
+		}
+		// Optional panel-local count, if the design includes one.
+		const countEl = root.querySelector<HTMLElement>('.brief__panel[aria-label="Inbox"] .inbox__count b');
+		if (countEl) countEl.textContent = String(inbox.items.length);
 	}
 
 	/** Regenerate the brief by running the "Morning Brief" Quick Action command (a Shell

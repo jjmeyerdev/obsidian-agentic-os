@@ -813,6 +813,60 @@ export const DASHBOARD_MARKUP = `<div class="dash" role="region" aria-label="Age
               </div>
             </div>
 
+            <!-- INBOX (live: GitHub notifications + email · plugin paints .inbox-list) -->
+            <div class="brief__panel brief__panel--wide" aria-label="Inbox">
+              <div class="brief__panel-head">
+                <span class="brief__panel-title">Inbox</span>
+                <span class="inbox__count">Inbox <b>4</b></span>
+              </div>
+              <div class="inbox-list">
+                <div class="inbox-item" data-kind="github">
+                  <span class="inbox-item__badge">review</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Review requested: fix flaky test in usage.ts</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">jay/agentic-os</span>
+                      <span class="inbox-item__account">jjmeyerdev</span>
+                      <span class="inbox-item__time">3h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="email">
+                  <span class="inbox-item__badge">email</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Your Vercel deployment is ready</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">notifications@vercel.com</span>
+                      <span class="inbox-item__account">jay.designs716</span>
+                      <span class="inbox-item__time">5h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="github">
+                  <span class="inbox-item__badge">mention</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">@JDesigns716 mentioned you in “Brief panel parity”</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">jay/llm-wiki-kit</span>
+                      <span class="inbox-item__account">JDesigns716</span>
+                      <span class="inbox-item__time">8h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="email">
+                  <span class="inbox-item__badge">email</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Invoice #2218 — receipt from Anthropic</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">receipts@anthropic.com</span>
+                      <span class="inbox-item__account">jay.designs716</span>
+                      <span class="inbox-item__time">1d</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </section>
 
@@ -1458,6 +1512,82 @@ export const FULL_BRIEF_MARKUP = `<div class="dash" role="region" aria-label="Ag
                 <div class="opp-item">
                   <span class="opp-item__num">4</span>
                   <span class="opp-item__text">Start a <em>Postgres FTS</em> note — two readings + one HN thread overlap.</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- INBOX (live: GitHub notifications + email · full view shows all rows) -->
+            <div class="brief__panel brief__panel--wide" aria-label="Inbox">
+              <div class="brief__panel-head">
+                <span class="brief__panel-title">Inbox</span>
+                <span class="inbox__count">Inbox <b>6</b></span>
+              </div>
+              <div class="inbox-list">
+                <div class="inbox-item" data-kind="github">
+                  <span class="inbox-item__badge">review</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Review requested: fix flaky test in usage.ts</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">jay/agentic-os</span>
+                      <span class="inbox-item__account">jjmeyerdev</span>
+                      <span class="inbox-item__time">3h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="email">
+                  <span class="inbox-item__badge">email</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Your Vercel deployment is ready</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">notifications@vercel.com</span>
+                      <span class="inbox-item__account">jay.designs716</span>
+                      <span class="inbox-item__time">5h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="github">
+                  <span class="inbox-item__badge">mention</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">@JDesigns716 mentioned you in “Brief panel parity”</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">jay/llm-wiki-kit</span>
+                      <span class="inbox-item__account">JDesigns716</span>
+                      <span class="inbox-item__time">8h</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="email">
+                  <span class="inbox-item__badge">email</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Invoice #2218 — receipt from Anthropic</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">receipts@anthropic.com</span>
+                      <span class="inbox-item__account">jay.designs716</span>
+                      <span class="inbox-item__time">1d</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="github">
+                  <span class="inbox-item__badge">assign</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Assigned to you: ship the Inbox panel markup</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">jay/agentic-os</span>
+                      <span class="inbox-item__account">jjmeyerdev</span>
+                      <span class="inbox-item__time">1d</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="inbox-item" data-kind="email">
+                  <span class="inbox-item__badge">email</span>
+                  <div class="inbox-item__body">
+                    <span class="inbox-item__title">Weekly digest: 3 PRs awaiting your review</span>
+                    <span class="inbox-item__meta">
+                      <span class="inbox-item__source">notifications@github.com</span>
+                      <span class="inbox-item__account">jay.designs716</span>
+                      <span class="inbox-item__time">2d</span>
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

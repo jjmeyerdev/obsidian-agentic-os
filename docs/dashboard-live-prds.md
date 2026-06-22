@@ -24,21 +24,19 @@ plugin is **desktop-only**. `dayplan` reads through Obsidian's own vault APIs.
 | [GitHub stats](prd-github-stats.md) | Overview stat cards · Projects tab | `github.ts` | #2, #4 |
 | [Latest Session](prd-latest-session.md) | Latest Session card · Sessions history | `session.ts` | #3, #5 |
 | [Quick Actions](prd-quick-actions.md) | Overview Quick Action buttons | `main.ts` | #6 |
-| [Schedule + Daily Tasks](prd-schedule-tasks.md) | Schedule · Daily Tasks | `dayplan.ts` | #7, #9 |
+| [Schedule + Daily Tasks](prd-schedule-tasks.md) | Schedule · Daily Tasks | `dayplan.ts` | #7, #9, #13 |
+| [Morning Brief](prd-morning-brief.md) | Morning Brief — Headlines · Reading Queue · Note Opportunities (𝕏 Conversation deferred) | `brief.ts` + a `/morning-brief` command | #11 |
+| [Activity Feed](prd-activity-feed.md) | Overview Activity Feed (panel ⑥) | `activity.ts` + an append-only `.agentic-os/runs.jsonl` | #12 |
 
-Token Burn and Schedule each had a follow-up slice (live-repaint, 12-hour times);
-those are folded into their PRDs above.
+Token Burn and Schedule each had follow-up slices, folded into their PRDs above (Token Burn
+live-repaint #8; Schedule 12-hour times #9 and single-digit alignment #13).
 
 ## In progress
 
-| PRD | Panel(s) | Source module | Status |
-|-----|----------|---------------|--------|
-| [Morning Brief](prd-morning-brief.md) | Morning Brief — Headlines · Reading Queue · Note Opportunities (𝕏 Conversation deferred) | `brief.ts` (planned) + a `/morning-brief` command | draft |
-| [Activity Feed](prd-activity-feed.md) | Overview Activity Feed (panel ⑥) | `activity.ts` (planned) + an append-only `.agentic-os/runs.jsonl` | draft |
+_Nothing in progress — every PRD'd slice is shipped._
 
-First Research-tab panel to go live; mirrors the Schedule + Tasks pattern (a headless
-command writes `brief:` into today's daily note, the plugin paints it).
-
-The Activity Feed reads a vault-root append-only `.agentic-os/runs.jsonl` that the agentic
-slash commands log to; the plugin paints recent runs newest-first, badge/message/time per
-the mockup.
+Morning Brief was the first Research-tab panel to go live, mirroring the Schedule + Tasks
+pattern (a headless `/morning-brief` writes `brief:` into today's daily note, the plugin
+paints it). The Activity Feed reads a vault-root append-only `.agentic-os/runs.jsonl` that
+the agentic slash commands (`/morning-brief`, `/plan-today`, `/plan-tomorrow`) log to; the
+plugin paints recent runs newest-first, badge/message/time per the mockup.

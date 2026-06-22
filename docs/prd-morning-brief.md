@@ -1,6 +1,6 @@
 # PRD — Morning Brief (live slice)
 
-**Status:** draft
+**Status:** shipped (PR #11)
 **Slice:** next in the dashboard-live effort (first Research-tab panel to go live)
 **Date:** 2026-06-21
 

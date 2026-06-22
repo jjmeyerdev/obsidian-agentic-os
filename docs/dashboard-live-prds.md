@@ -34,6 +34,11 @@ those are folded into their PRDs above.
 | PRD | Panel(s) | Source module | Status |
 |-----|----------|---------------|--------|
 | [Morning Brief](prd-morning-brief.md) | Morning Brief — Headlines · Reading Queue · Note Opportunities (𝕏 Conversation deferred) | `brief.ts` (planned) + a `/morning-brief` command | draft |
+| [Activity Feed](prd-activity-feed.md) | Overview Activity Feed (panel ⑥) | `activity.ts` (planned) + an append-only `.agentic-os/runs.jsonl` | draft |
 
 First Research-tab panel to go live; mirrors the Schedule + Tasks pattern (a headless
 command writes `brief:` into today's daily note, the plugin paints it).
+
+The Activity Feed reads a vault-root append-only `.agentic-os/runs.jsonl` that the agentic
+slash commands log to; the plugin paints recent runs newest-first, badge/message/time per
+the mockup.

@@ -21,9 +21,11 @@ import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
 import { readHackerNews, HNStory, HNKind } from "./hn";
 import { readClaudeStatus, ClaudeStatus } from "./claudeStatus";
+import { renderTranscript } from "./transcript";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
+export const VIEW_TYPE_SESSION_TRANSCRIPT = "agentic-os-session-transcript";
 
 /** Custom ribbon + tab icon: the brand waveform glyph from the dashboard header.
  *  The original art is a 22×22 viewBox; Obsidian renders icons in 0 0 100 100,
@@ -1019,8 +1021,13 @@ class AgenticOSView extends ItemView {
 			.filter((p): p is string => Boolean(p))
 			.map((p) => this.esc(p))
 			.join(" · ");
+		// A row opens its transcript only when we have the source path; the delegated
+		// handler in wireSessionsToolbar keys off data-transcript.
+		const open = s.path
+			? ` data-transcript="${this.esc(s.path)}" data-title="${this.esc(s.title ?? "Session")}" role="link" tabindex="0"`
+			: "";
 		return (
-			'<div class="rank-row">' +
+			`<div class="rank-row"${open}>` +
 			`<span class="rank-row__num">${num}</span>` +
 			'<div class="rank-row__body">' +
 			`<div class="rank-row__line1">${this.esc(s.title ?? "Untitled session")}` +
@@ -1537,6 +1544,43 @@ class AgenticOSView extends ItemView {
 				this.renderSessionsList(root);
 			});
 		}
+
+		// A row click/Enter opens that session's transcript in its own pane. Delegated
+		// on the list since rows are repainted by sort/filter; mirrors wireHNRows.
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (list) {
+			const open = (ev: Event): void => {
+				const row = (ev.target as HTMLElement).closest<HTMLElement>("[data-transcript]");
+				const path = row?.getAttribute("data-transcript");
+				if (path) void this.openTranscript(path, row?.getAttribute("data-title") ?? "Session");
+			};
+			this.on(list, "click", open);
+			this.on(list, "keydown", (ev) => {
+				const e = ev as KeyboardEvent;
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					open(ev);
+				}
+			});
+		}
+	}
+
+	/** Bring the full sessions list to the front of this view — the transcript pane's
+	 *  back button calls this on the dashboard leaf so closing a transcript lands you
+	 *  back on the list, not the Overview tab. A no-op re-entry if already there
+	 *  (navigate guards on equal state). */
+	revealSessionsList(): void {
+		this.activeTab = "panel-overview";
+		this.navigate("full-sessions");
+	}
+
+	/** Open a session transcript in its own pane (reuses one if already open). */
+	private async openTranscript(path: string, title: string): Promise<void> {
+		const { workspace } = this.app;
+		const existing = workspace.getLeavesOfType(VIEW_TYPE_SESSION_TRANSCRIPT)[0];
+		const leaf = existing ?? workspace.getLeaf("tab");
+		await leaf.setViewState({ type: VIEW_TYPE_SESSION_TRANSCRIPT, active: true, state: { path, title } });
+		workspace.revealLeaf(leaf);
 	}
 
 	/** Open a repo in an embedded browser tab (reuses one if already open). */
@@ -1607,6 +1651,223 @@ class RepoBrowserView extends ItemView {
 	}
 }
 
+/** A session transcript rendered in a center leaf by shelling out to the
+ *  `claude-history` CLI (`--render`). The CLI bakes wrapping + the ledger gutter into
+ *  its text, so we "reflow" by measuring the pane in monospace columns, passing that
+ *  as COLUMNS, and re-rendering (debounced) when the pane resizes — a render is ~15ms.
+ *  Header toggles flip tool-call / thinking detail. Path/title/toggles ride view state
+ *  so the tab survives a workspace reload. Desktop-only (the CLI is a child process). */
+class SessionTranscriptView extends ItemView {
+	private path = "";
+	private title = "Session";
+	private showTools = false;
+
+	private body: HTMLElement | null = null;
+	private toolsBtn: HTMLElement | null = null;
+	private resizeObserver: ResizeObserver | null = null;
+	private resizeTimer: number | null = null;
+	/** Guards against a slow render painting over a newer one (resize/toggle races). */
+	private renderToken = 0;
+
+	constructor(leaf: WorkspaceLeaf) {
+		super(leaf);
+	}
+
+	getViewType(): string {
+		return VIEW_TYPE_SESSION_TRANSCRIPT;
+	}
+
+	getDisplayText(): string {
+		return this.title;
+	}
+
+	getIcon(): string {
+		return "message-square";
+	}
+
+	async setState(state: unknown, result: ViewStateResult): Promise<void> {
+		const s = state as { path?: string; title?: string } | null;
+		if (s && typeof s.path === "string") {
+			this.path = s.path;
+			this.title = s.title || "Session";
+		}
+		this.buildChrome();
+		void this.render();
+		await super.setState(state, result);
+	}
+
+	getState(): Record<string, unknown> {
+		return { path: this.path, title: this.title };
+	}
+
+	async onOpen(): Promise<void> {
+		this.buildChrome();
+		void this.render();
+	}
+
+	async onClose(): Promise<void> {
+		this.resizeObserver?.disconnect();
+		this.resizeObserver = null;
+		if (this.resizeTimer !== null) window.clearTimeout(this.resizeTimer);
+	}
+
+	/** Close this transcript and return to the dashboard's full sessions list. Reuses
+	 *  an open dashboard leaf if there is one, else opens one; then reveals it on the
+	 *  sessions list and detaches this pane so "back" actually leaves the transcript. */
+	private async backToSessions(): Promise<void> {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(VIEW_TYPE_AGENTIC_OS)[0];
+		if (!leaf) {
+			leaf = workspace.getLeaf("tab");
+			await leaf.setViewState({ type: VIEW_TYPE_AGENTIC_OS, active: true });
+		}
+		const view = leaf.view;
+		if (view instanceof AgenticOSView) view.revealSessionsList();
+		workspace.revealLeaf(leaf);
+		this.leaf.detach();
+	}
+
+	/** (Re)build the header toolbar + the scrolling body, and (re)attach the resize
+	 *  observer that reflows the transcript to the pane width. */
+	private buildChrome(): void {
+		this.contentEl.empty();
+		this.contentEl.addClass("agentic-os", "transcript-view");
+		if (!this.path) return;
+
+		const bar = this.contentEl.createDiv({ cls: "transcript-bar" });
+		const back = bar.createEl("button", { cls: "transcript-back", text: "← Sessions" });
+		back.addEventListener("click", () => void this.backToSessions());
+
+		this.toolsBtn = bar.createEl("button", { cls: "transcript-toggle", text: "+ Tools" });
+		this.toolsBtn.addEventListener("click", () => {
+			this.showTools = !this.showTools;
+			void this.render();
+		});
+
+		this.body = this.contentEl.createDiv({ cls: "transcript-body" });
+
+		this.resizeObserver = new ResizeObserver(() => {
+			if (this.resizeTimer !== null) window.clearTimeout(this.resizeTimer);
+			this.resizeTimer = window.setTimeout(() => void this.render(), 150);
+		});
+		this.resizeObserver.observe(this.contentEl);
+	}
+
+	/** Target wrap width in monospace columns. We measure the body's char width and
+	 *  fill the visible pane, then add back the gutter width the CLI reserves for its
+	 *  role labels (which we strip when grouping) so wrapped lines reach the bubble
+	 *  edge. Falls back to 80 before the pane is laid out. */
+	private columns(): number {
+		const body = this.body;
+		if (!body || !body.clientWidth) return 80;
+		const probe = body.createSpan({ text: "0".repeat(100) });
+		const charWidth = probe.getBoundingClientRect().width / 100;
+		probe.remove();
+		if (!charWidth) return 80;
+		// GUTTER_COLS: the CLI's "<label> │ " prefix; BUBBLE_PX: per-message rail +
+		// paddings that the text can't use. Both are approximate — a few columns off
+		// just wraps slightly narrow, which is harmless.
+		const GUTTER_COLS = 12;
+		const BUBBLE_PX = 64;
+		const cols = Math.floor((body.clientWidth - BUBBLE_PX) / charWidth) + GUTTER_COLS;
+		return Math.max(24, Math.min(400, cols));
+	}
+
+	/** Render the transcript at the current width + toggle state, guarded so a stale
+	 *  read (older resize/toggle) can't paint over a newer one. */
+	private async render(): Promise<void> {
+		if (!this.body || !this.path) return;
+		const ticket = ++this.renderToken;
+		this.syncToggleState();
+
+		let text: string;
+		try {
+			text = await renderTranscript(this.path, {
+				columns: this.columns(),
+				showTools: this.showTools,
+			});
+		} catch {
+			if (ticket !== this.renderToken || !this.body) return;
+			this.body.empty();
+			this.body.createDiv({
+				cls: "transcript-empty",
+				text:
+					"Couldn't render this transcript. The `claude-history` CLI must be installed and on " +
+					"PATH (cargo installs it to ~/.cargo/bin). Install it, then reopen this session.",
+			});
+			return;
+		}
+
+		if (ticket !== this.renderToken || !this.body) return;
+		this.paint(text);
+	}
+
+	/** Group the CLI's flat ledger into per-turn message blocks and paint each as a
+	 *  styled bubble (role chip + monospace body). The ledger is a fixed-width
+	 *  right-aligned label, a "│" gutter, then content; continuation lines repeat the
+	 *  gutter with a blank label; blank lines (no gutter) separate turns. We key off
+	 *  the gutter's column — found once from the first "│" — so content that itself
+	 *  contains "│" (tables, box art) can't be mistaken for the separator. */
+	private paint(text: string): void {
+		const body = this.body;
+		if (!body) return;
+		body.empty();
+
+		const lines = text.split("\n");
+		let col = -1;
+		for (const l of lines) {
+			const i = l.indexOf("│");
+			if (i >= 0) {
+				col = i;
+				break;
+			}
+		}
+		if (col < 0) {
+			// No ledger gutter (empty transcript or an unexpected format) — show raw.
+			body.createEl("pre", { cls: "tx-text", text: text.trim() });
+			return;
+		}
+
+		type Block = { key: string; name: string; lines: string[] };
+		const blocks: Block[] = [];
+		let cur: Block | null = null;
+		for (const l of lines) {
+			if (l[col] !== "│") continue; // Turn boundary — next labelled line opens a block.
+			const label = l.slice(0, col).trim();
+			const content = l.slice(col + 1).replace(/^ /, "");
+			if (label) {
+				cur = { ...this.role(label), lines: [content] };
+				blocks.push(cur);
+			} else if (cur) {
+				cur.lines.push(content);
+			}
+		}
+
+		for (const b of blocks) {
+			while (b.lines.length && !b.lines[b.lines.length - 1].trim()) b.lines.pop();
+			while (b.lines.length && !b.lines[0].trim()) b.lines.shift();
+			if (!b.lines.length) continue;
+			const msg = body.createDiv({ cls: "tx-msg" });
+			msg.dataset.role = b.key;
+			msg.createDiv({ cls: "tx-role", text: b.name });
+			msg.createEl("pre", { cls: "tx-text", text: b.lines.join("\n") });
+		}
+	}
+
+	/** Map a ledger label to a style key + display name. */
+	private role(label: string): { key: string; name: string } {
+		if (label === "You") return { key: "user", name: "You" };
+		if (label === "Claude") return { key: "claude", name: "Claude" };
+		if (label.startsWith("↳") || label === "Result") return { key: "result", name: "Result" };
+		return { key: "meta", name: label };
+	}
+
+	/** Reflect the active toggle on its button. */
+	private syncToggleState(): void {
+		this.toolsBtn?.toggleClass("is-active", this.showTools);
+	}
+}
+
 export default class AgenticOSPlugin extends Plugin {
 	settings: AgenticOSSettings = DEFAULT_SETTINGS;
 
@@ -1619,6 +1880,7 @@ export default class AgenticOSPlugin extends Plugin {
 
 		this.registerView(VIEW_TYPE_AGENTIC_OS, (leaf) => new AgenticOSView(leaf, this));
 		this.registerView(VIEW_TYPE_REPO_BROWSER, (leaf) => new RepoBrowserView(leaf));
+		this.registerView(VIEW_TYPE_SESSION_TRANSCRIPT, (leaf) => new SessionTranscriptView(leaf));
 
 		this.addRibbonIcon(AGENTIC_OS_ICON_ID, "Open Agentic OS", () => {
 			void this.activateView();

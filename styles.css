@@ -2184,3 +2184,119 @@
   .agentic-os .full-sort,
   .agentic-os .full-search { transition: none; }
 }
+
+/* Clickable rank rows (HN stories + sessions) get a pointer + a subtle hover. */
+.agentic-os .rank-row[role="link"] { cursor: pointer; }
+.agentic-os .rank-row[role="link"]:hover { background: var(--accent-soft); }
+
+/* Session transcript pane: a header of detail toggles over a scrolling column of
+   per-turn message bubbles. claude-history renders a flat monospace ledger; the view
+   parses its role gutter and re-groups it into bubbles (You / Claude / Result), each
+   keeping a monospace body so code and diffs stay aligned. */
+.agentic-os.transcript-view { padding: 0; display: flex; flex-direction: column; height: 100%; }
+.agentic-os .transcript-bar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: var(--border) solid var(--border-hairline);
+  background: var(--surface);
+}
+.agentic-os .transcript-toggle {
+  appearance: none;
+  background: var(--inset);
+  border: var(--border) solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: var(--track-badge);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+/* Back button shares the toggle's chrome but sits hard left, pushing tools right. */
+.agentic-os .transcript-back {
+  appearance: none;
+  margin-right: auto;
+  background: var(--inset);
+  border: var(--border) solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: var(--track-badge);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.agentic-os .transcript-back:hover { color: var(--accent); border-color: rgba(34,211,238,0.45); }
+.agentic-os .transcript-toggle:hover { color: var(--accent); border-color: rgba(34,211,238,0.45); }
+.agentic-os .transcript-toggle.is-active {
+  color: var(--inset);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.agentic-os .transcript-body {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 20px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agentic-os .transcript-empty {
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 60ch;
+}
+
+/* One conversation turn. A left rail + chip colour-codes the speaker; the body keeps
+   the CLI's monospace wrapping (white-space: pre) so alignment survives. */
+.agentic-os .tx-msg {
+  padding: 12px 16px;
+  border: var(--border) solid var(--border-hairline);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.agentic-os .tx-role {
+  font-family: var(--font-label);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: var(--track-badge);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 7px;
+}
+.agentic-os .tx-text {
+  margin: 0;
+  font-family: var(--font-num);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* You: green rail, faintly tinted. */
+.agentic-os .tx-msg[data-role="user"] {
+  border-left-color: var(--positive);
+  background: color-mix(in oklab, var(--positive) 7%, var(--surface));
+}
+.agentic-os .tx-msg[data-role="user"] .tx-role { color: var(--positive); }
+
+/* Claude: accent rail. */
+.agentic-os .tx-msg[data-role="claude"] { border-left-color: var(--accent); }
+.agentic-os .tx-msg[data-role="claude"] .tx-role { color: var(--accent); }
+
+/* Tool results: recessed onto the inset surface, dimmer text. */
+.agentic-os .tx-msg[data-role="result"] {
+  border-left-color: var(--text-dim);
+  background: var(--inset);
+}
+.agentic-os .tx-msg[data-role="result"] .tx-text { color: var(--text-muted); }

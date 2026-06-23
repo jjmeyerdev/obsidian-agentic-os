@@ -33,6 +33,9 @@ export interface LatestSession {
 	branch: string | null;
 	/** Working directory basename (the repo/folder name), or null. */
 	cwd: string | null;
+	/** Absolute path to the source *.jsonl transcript, or null if none was read. The
+	 *  full sessions list carries this so a row can open the conversation. */
+	path: string | null;
 }
 
 const EMPTY: LatestSession = {
@@ -45,6 +48,7 @@ const EMPTY: LatestSession = {
 	model: null,
 	branch: null,
 	cwd: null,
+	path: null,
 };
 
 const PROJECTS_DIR = (home: string): string => join(home, ".claude", "projects");
@@ -107,6 +111,10 @@ async function transcriptsByRecency(dir: string): Promise<string[]> {
 		for (const entry of entries) {
 			const full = join(d, entry.name);
 			if (entry.isDirectory()) {
+				// `subagents/` holds agent-internal transcripts (agent-*.jsonl), not user
+				// sessions — skip them so they don't inflate counts or hijack the "latest
+				// session" anchor.
+				if (entry.name === "subagents") continue;
 				await walk(full);
 			} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
 				try {
@@ -218,6 +226,7 @@ async function parseSession(file: string): Promise<LatestSession | null> {
 		model: model ? trimModel(model) : null,
 		branch,
 		cwd: cwd ? basename(cwd) : null,
+		path: file,
 	};
 }
 

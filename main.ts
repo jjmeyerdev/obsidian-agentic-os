@@ -21,6 +21,7 @@ import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
 import { readHackerNews, HNStory, HNKind } from "./hn";
 import { readInbox, Inbox } from "./inbox";
+import { readClaudeStatus, ClaudeStatus } from "./claudeStatus";
 
 export const VIEW_TYPE_AGENTIC_OS = "agentic-os-view";
 export const VIEW_TYPE_REPO_BROWSER = "agentic-os-repo-browser";
@@ -97,6 +98,10 @@ const DEFAULT_SETTINGS: AgenticOSSettings = {
 /** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
  *  events repaint on demand, so this only has to keep an idle pane current. */
 const TOKEN_BURN_INTERVAL_MS = 60_000;
+
+/** Claude Statuspage refresh cadence. Incidents change slower than token usage,
+ *  but the header should recover without waiting for a manual pane focus. */
+const CLAUDE_STATUS_INTERVAL_MS = 5 * 60_000;
 
 /** GitHub stat-card refresh cadence — far slower than Token Burn: these figures
  *  drift over days, and the star-history pass makes a request per starred repo. */
@@ -270,6 +275,8 @@ class AgenticOSView extends ItemView {
 	private activeTab = "panel-overview";
 	/** Per-render listener removers, flushed on every re-render and on close. */
 	private cleanups: Array<() => void> = [];
+	/** Stale-paint guard for Claude Statuspage reads. */
+	private claudeStatusToken = 0;
 	/** Guards against an in-flight async read painting into a stale render. */
 	private burnToken = 0;
 	/** Same stale-paint guard for the (slower) GitHub fetch. */
@@ -337,6 +344,7 @@ class AgenticOSView extends ItemView {
 				this.refreshBrief();
 			}, TOKEN_BURN_INTERVAL_MS),
 		);
+		this.registerInterval(window.setInterval(() => void this.refreshClaudeStatus(), CLAUDE_STATUS_INTERVAL_MS));
 		this.registerInterval(
 			window.setInterval(() => {
 				void this.refreshGitHub();
@@ -349,6 +357,7 @@ class AgenticOSView extends ItemView {
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", (leaf) => {
 				if (leaf !== this.leaf) return;
+				void this.refreshClaudeStatus();
 				void this.refreshTokenBurn();
 				void this.refreshLatestSession();
 				void this.refreshActivity();
@@ -405,6 +414,7 @@ class AgenticOSView extends ItemView {
 		// Single, well-scoped innerHTML on the root container — the markup is
 		// static trusted content generated from the source dashboards.
 		this.root.innerHTML = MARKUP[this.state];
+		void this.refreshClaudeStatus();
 		if (this.state === "dashboard") {
 			this.wireDashboard(this.root);
 			void this.refreshTokenBurn();
@@ -442,6 +452,37 @@ class AgenticOSView extends ItemView {
 				void this.refreshInbox();
 			}
 		}
+	}
+
+	/** Fetch Claude's aggregate service status and paint the Token Burn live label.
+	 *  Guarding prevents an older render's response from rewriting a newer dashboard. */
+	async refreshClaudeStatus(): Promise<void> {
+		if (!this.root || this.state !== "dashboard") return;
+		const ticket = ++this.claudeStatusToken;
+
+		const status = await readClaudeStatus();
+
+		if (!this.root || ticket !== this.claudeStatusToken) return;
+		this.paintClaudeStatus(this.root, status);
+	}
+
+	private paintClaudeStatus(root: HTMLElement, status: ClaudeStatus): void {
+		const label = root.querySelector<HTMLElement>(".token-hero .micro-label__live");
+		if (!label) return;
+		label.dataset.tone = status.tone;
+		const title = status.updatedAt
+			? `Claude status: ${status.description} (${status.updatedAt})`
+			: `Claude status: ${status.description}`;
+		label.setAttribute("aria-label", title);
+		label.setAttribute("title", title);
+
+		// Preserve the generated dot element and replace only the readable label.
+		const dot = label.querySelector<HTMLElement>(".live-dot");
+		for (const child of Array.from(label.childNodes)) {
+			if (child !== dot) child.remove();
+		}
+		if (dot && dot.parentElement !== label) label.prepend(dot);
+		label.appendChild(document.createTextNode(" " + status.label));
 	}
 
 	/** Read the authoritative snapshot (+ aligned token estimate), feed the

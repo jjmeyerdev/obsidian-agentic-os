@@ -380,7 +380,13 @@
   color: var(--text-dim);
 }
 .agentic-os .micro-label--accent { color: var(--accent); }
-.agentic-os .micro-label__live   { color: var(--positive); }
+.agentic-os .micro-label__live {
+  color: var(--positive);
+}
+.agentic-os .micro-label__live[data-tone="live"]    { color: var(--positive); }
+.agentic-os .micro-label__live[data-tone="warn"]    { color: var(--warn); }
+.agentic-os .micro-label__live[data-tone="error"]   { color: var(--negative); }
+.agentic-os .micro-label__live[data-tone="neutral"] { color: var(--text-muted); }
 .agentic-os .micro-label__flame {
   width: 11px;
   height: 11px;
@@ -408,8 +414,13 @@
   .agentic-os .micro-label__flame { filter: drop-shadow(0 0 2px rgba(34,211,238,0.5)); }
 }
 .agentic-os .live-dot {
-  color: var(--positive);
+  color: currentColor;
   animation: ao-live-pulse var(--tick-live) ease-in-out infinite;
+}
+.agentic-os .micro-label__live[data-tone="warn"] .live-dot,
+.agentic-os .micro-label__live[data-tone="error"] .live-dot,
+.agentic-os .micro-label__live[data-tone="neutral"] .live-dot {
+  animation: none;
 }
 
 /* StatusDot — standalone live indicator */

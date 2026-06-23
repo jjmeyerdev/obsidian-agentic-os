@@ -132,6 +132,9 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Repainting interactive rows (task toggles rebuild the task/schedule grids)
+     must not let the browser's scroll-anchoring shift the pane. */
+  overflow-anchor: none;
 }
 
 /* ============================================================================
@@ -937,6 +940,11 @@
   gap: 11px;
   padding: 7px 0;
   cursor: pointer;
+  /* Containing block for the visually-hidden .task-check (position:absolute):
+     keeps it anchored to its own row so focusing it on click doesn't make the
+     pane scroll to "reveal" it (.dash's container-type would otherwise be the
+     containing block, far up the tree). */
+  position: relative;
 }
 .agentic-os .task-check {
   position: absolute;

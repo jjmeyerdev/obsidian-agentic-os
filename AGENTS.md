@@ -8,8 +8,9 @@ An Obsidian plugin that renders a "command center" dashboard in a main-area leaf
 (`agentic-os-view`, opened as a center tab). The layout is a faithful port of a
 hand-built HTML/CSS design into the Obsidian plugin API — the markup is static,
 generated template strings (see below) — but **live data is painted into it** at
-runtime from the local Claude Code usage/session files and the `gh` CLI. The values
-baked into the markup are the designer's placeholders; the plugin overwrites them.
+runtime from the local Claude Code usage/session files, the `gh` CLI, and Claude's
+official Statuspage JSON API. The values baked into the markup are the designer's
+placeholders; the plugin overwrites them.
 
 ## Commands
 
@@ -78,9 +79,13 @@ the number of `.pill-link` buttons, the generator throws by design.
   `<g fill="currentColor">` (the `translate/scale` transform is the only fit knob).
 - `activateView()` reveals an existing leaf if present rather than opening a duplicate.
 
-**Live data is painted over the static markup.** Three desktop-only data modules
-(Node `child_process`/`fs`, so this won't run on mobile) feed the dashboard:
+**Live data is painted over the static markup.** Most data modules are desktop-only
+(Node `child_process`/`fs`, so they won't run on mobile); `claudeStatus.ts` uses
+Obsidian `requestUrl` to read the public Statuspage API:
 
+- `claudeStatus.ts` — the Token Burn live label, from
+  `https://status.claude.com/api/v2/status.json`. Maps aggregate Statuspage severity
+  to Live / Degraded / Offline / Unknown.
 - `usage.ts` — the Token Burn panel, from the local Claude Code usage snapshot. The
   panel reads as a **percentage** off an authoritative snapshot; the token cap is
   self-calibrated (median of tokens÷pct samples, kept per rate-limit window).
@@ -96,20 +101,21 @@ the number of `.pill-link` buttons, the generator throws by design.
 
 The pattern: `render()` injects the static markup, then async `refresh*()` methods
 fetch and `paint*()` write into known selectors. **Every refresh carries a monotonic
-"token" guard** (`burnToken`, `ghToken`, `sessionToken`, `projectsToken`, `reposToken`) —
-a slow read bails rather than paint into a newer render. Reads degrade gracefully
-(gh missing/unauthed → cards blank or, for Projects, the static design is kept).
+"token" guard** (for example `claudeStatusToken`, `burnToken`, `ghToken`,
+`sessionToken`, `projectsToken`, `reposToken`) — a slow read bails rather than paint
+into a newer render. Reads degrade gracefully (status unavailable → Unknown; gh
+missing/unauthed → cards blank or, for Projects, the static design is kept).
 
-Cadence: Token Burn + Latest Session every 60s, GitHub cards + Projects every 30min
-(see `*_INTERVAL_MS`), plus an instant repaint on `active-leaf-change` when the pane
-becomes active. The Projects tab is the heaviest fetch (paginates each repo's commit
-history), so it's **lazy** — fetched on first tab view, not on load — and shows a
-shimmer skeleton (`#panel-projects.is-loading`) on that first load so the placeholder
-markup never flashes. Opening the tab again refetches just the repo cards via the
-light GraphQL-only `readProjectRepos` (no commit pagination); the rest of the panel
-keeps to the 30min timer. Settings: `window` (rate-limit window) and `githubUsername`
-(blank = the gh-authed user); `openOnStartup` (default off) opens the pane on
-`onLayoutReady`.
+Cadence: Token Burn + Latest Session every 60s, Claude Status every 5min, GitHub
+cards + Projects every 30min (see `*_INTERVAL_MS`), plus an instant repaint on
+`active-leaf-change` when the pane becomes active. The Projects tab is the heaviest
+fetch (paginates each repo's commit history), so it's **lazy** — fetched on first tab
+view, not on load — and shows a shimmer skeleton (`#panel-projects.is-loading`) on
+that first load so the placeholder markup never flashes. Opening the tab again
+refetches just the repo cards via the light GraphQL-only `readProjectRepos` (no commit
+pagination); the rest of the panel keeps to the 30min timer. Settings: `window`
+(rate-limit window) and `githubUsername` (blank = the gh-authed user);
+`openOnStartup` (default off) opens the pane on `onLayoutReady`.
 
 **Fonts are loaded in code, not CSS.** `injectFonts()` (in `onload`) builds a
 `<style id="agentic-os-fonts">` with `@font-face` rules whose `src` is

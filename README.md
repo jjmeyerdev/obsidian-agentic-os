@@ -15,6 +15,8 @@ tasks. Per-panel design notes live in [`docs/`](docs/).
 
 - Main-area view (`agentic-os-view`) with three tabs — Overview, Projects, Research —
   with live data painted over the static design:
+  - **Claude Status** — the Token Burn live label reads Anthropic's official
+    Statuspage JSON endpoint and switches between Live, Degraded, Offline, or Unknown.
   - **Token Burn** — your real Claude Code rate-limit usage from the local usage
     snapshot (percentage + reset countdown + an estimated token figure), live-repainted
     as the snapshot updates.
@@ -36,9 +38,11 @@ tasks. Per-panel design notes live in [`docs/`](docs/).
 
 ## Live data
 
-The panels read from local sources on your machine — there's no server, and the plugin
-stores no history of its own (every figure is recomputed from the source each refresh):
+The panels read from local sources on your machine plus Claude's official Statuspage
+JSON endpoint — there's no server, and the plugin stores no history of its own (every
+figure is recomputed from the source each refresh):
 
+- **Claude Status** ← `https://status.claude.com/api/v2/status.json`.
 - **Token Burn** ← `~/.claude/usage-snapshot.json` (mirrored there by your Claude Code
   statusline script).
 - **GitHub** ← the `gh` CLI, reusing your existing `gh auth` (no token to store).
@@ -112,6 +116,7 @@ navigation, and fails loudly if the expected markup isn't found.
 | Path | Role |
 |------|------|
 | `main.ts` | The plugin: view, view-state navigation, painting, ribbon/command, settings. |
+| `claudeStatus.ts` | Token Burn Claude Status label data, via the official Statuspage JSON API. |
 | `usage.ts` | Token Burn data — the Claude Code usage snapshot + cap calibration. |
 | `github.ts` | GitHub data — Overview stat cards and the Projects tab, via the `gh` CLI. |
 | `session.ts` | Latest Session + sessions-history data, from Claude Code transcripts. |

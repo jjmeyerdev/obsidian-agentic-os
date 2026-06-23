@@ -1439,6 +1439,9 @@ class AgenticOSView extends ItemView {
 		const restore = tabs.find((t) => t.getAttribute("aria-controls") === this.activeTab);
 		if (restore) selectTab(restore);
 
+		const shellRefresh = root.querySelector<HTMLElement>(".shell-head__actions .icon-btn");
+		if (shellRefresh) this.on(shellRefresh, "click", () => this.plugin.reloadSelf());
+
 		// Repo cards are painted async, so delegate off the (static) grid container:
 		// clicking/Entering a card opens that repo in an embedded browser tab.
 		const grid = root.querySelector<HTMLElement>(".gh-repo-grid");
@@ -1740,6 +1743,33 @@ export default class AgenticOSPlugin extends Plugin {
 		const leaf = workspace.getLeaf("tab");
 		await leaf.setViewState({ type: VIEW_TYPE_AGENTIC_OS, active: true });
 		await workspace.revealLeaf(leaf);
+	}
+
+	/** Force-reload this plugin through Obsidian's plugin manager. This intentionally
+	 *  avoids Hot Reload's scan command because scans only reload after a changed
+	 *  `main.js`/`styles.css` mtime is detected; the header button should be a
+	 *  dependable manual reload. */
+	reloadSelf(): void {
+		const plugins = (this.app as any).plugins;
+		const id = this.manifest.id;
+		if (!plugins?.disablePlugin || !plugins?.enablePlugin || !plugins?.enabledPlugins?.has(id)) {
+			new Notice("Agentic OS reload is unavailable in this Obsidian session.");
+			return;
+		}
+
+		new Notice("Reloading Agentic OS…");
+		window.setTimeout(() => {
+			void (async () => {
+				try {
+					await plugins.disablePlugin(id);
+					await plugins.enablePlugin(id);
+					new Notice("Agentic OS reloaded.");
+				} catch (err) {
+					console.error("Agentic OS reload failed", err);
+					new Notice("Agentic OS reload failed. Check the developer console.");
+				}
+			})();
+		}, 0);
 	}
 
 	async loadSettings(): Promise<void> {

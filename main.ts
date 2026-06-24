@@ -20,6 +20,7 @@ import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "
 import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
 import { readHackerNews, HNStory, HNKind } from "./hn";
+import { readReleaseRadar, readRadarOverlay, writeRadarInput, discoverGhAccounts, RadarRow, RadarGroup } from "./radar";
 import { readClaudeStatus, ClaudeStatus } from "./claudeStatus";
 import { renderTranscript } from "./transcript";
 
@@ -85,6 +86,10 @@ interface AgenticOSSettings {
 	 *  dashboard button to an Obsidian command (e.g. a Shell Commands command) it runs
 	 *  on click. Vault-specific command IDs, hence a setting. */
 	quickActions: string;
+	/** Authed gh accounts the Release Radar should NOT scan (by login). Default empty =
+	 *  every discovered account is included. A per-account opt-out, so the default "all on"
+	 *  needs no stored state and newly-added accounts appear automatically. */
+	radarExcludedAccounts: string[];
 }
 
 const DEFAULT_SETTINGS: AgenticOSSettings = {
@@ -94,6 +99,7 @@ const DEFAULT_SETTINGS: AgenticOSSettings = {
 	githubUsername: "",
 	sessionFolderGroups: "",
 	quickActions: "",
+	radarExcludedAccounts: [],
 };
 
 /** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
@@ -117,6 +123,9 @@ const HN_INTERVAL_MS = 10 * 60_000;
 const HN_CARD_LIMIT = 5;
 const HN_FULL_LIMIT = 30;
 
+/** Release Radar rows on the dashboard card; the full view shows all. */
+const RADAR_CARD_LIMIT = 6;
+
 /** How many run-log entries the Activity Feed shows — the designer's row count. */
 const ACTIVITY_LIMIT = 8;
 
@@ -129,6 +138,7 @@ const ACTIVITY_BADGE_VARIANT: Record<string, string> = {
 	research: "badge--accent",
 	brief: "badge--accent",
 	inbox: "badge--accent",
+	radar: "badge--accent",
 	atomize: "badge--accent",
 	plan: "badge--neutral",
 	cleanup: "badge--neutral",
@@ -292,6 +302,19 @@ class AgenticOSView extends ItemView {
 	/** Full HN view toolbar state: active chip and the search box text. */
 	private hnChip: "top" | "new" | HNKind = "top";
 	private hnFilter = "";
+	/** Stale-paint guard for the Release Radar (dashboard card + full view). */
+	private radarToken = 0;
+	/** Cached radar rows (all tracked deps, pre-sorted by priority), so the full view
+	 *  paints instantly and the chips/search filter from cache without refetching. */
+	private radarRows: RadarRow[] = [];
+	/** Radar is the heaviest fetch (repos × package.json × npm), so it's lazy like
+	 *  Projects: fetched on first Research-tab view, then kept fresh on a slow timer. */
+	private radarLoaded = false;
+	/** Full radar view toolbar state: active chip and the search box text. */
+	private radarChip: "all" | RadarGroup = "all";
+	private radarFilter = "";
+	/** Distinct repos scanned (with a package.json) — the full view's "N packages · M repos". */
+	private radarRepoCount = 0;
 	/** Stale-paint guard for the Projects tab (heaviest fetch — commit history). */
 	private projectsToken = 0;
 	/** Stale-paint guard for the light repos-only refresh (on tab open). */
@@ -339,6 +362,7 @@ class AgenticOSView extends ItemView {
 			window.setInterval(() => {
 				void this.refreshGitHub();
 				if (this.projectsLoaded) void this.refreshProjects();
+				if (this.radarLoaded) void this.refreshRadar();
 			}, GITHUB_INTERVAL_MS),
 		);
 		this.registerInterval(window.setInterval(() => void this.refreshHackerNews(), HN_INTERVAL_MS));
@@ -354,6 +378,7 @@ class AgenticOSView extends ItemView {
 				this.refreshDayPlan();
 				this.refreshBrief();
 				void this.refreshHackerNews();
+				if (this.radarLoaded) void this.refreshRadar();
 				if (this.activeTab === "panel-projects") void this.refreshProjects();
 				if (this.state === "full-sessions") void this.refreshFolderSessions();
 			}),
@@ -412,8 +437,11 @@ class AgenticOSView extends ItemView {
 			this.refreshDayPlan();
 			this.refreshBrief();
 			void this.refreshHackerNews();
-			// innerHTML reset wipes painted Projects data, so repaint if already loaded.
+			// innerHTML reset wipes painted Projects/Radar data, so repaint if already loaded.
 			if (this.projectsLoaded) void this.refreshProjects();
+			// Radar refetch is heavy; on re-render just repaint the card from cache (the
+			// timer + active-leaf repaint keep the data itself fresh).
+			if (this.radarLoaded) this.paintRadarCard(this.root);
 		} else {
 			this.wireFullView(this.root);
 			if (this.state === "full-hn") {
@@ -424,6 +452,19 @@ class AgenticOSView extends ItemView {
 				// Shimmer over the placeholder rows until the fetch (or the cache) paints.
 				this.showHNSkeleton(this.root);
 				void this.refreshHackerNews();
+			}
+			if (this.state === "full-radar") {
+				// Fresh entry starts on the "All" chip with an empty search, matching the
+				// markup's is-active chip and empty search box.
+				this.radarChip = "all";
+				this.radarFilter = "";
+				// Cached (the dashboard usually loaded it first) → paint instantly; the
+				// timer keeps it fresh. Otherwise shimmer + fetch.
+				if (this.radarRows.length) this.renderRadarList(this.root);
+				else {
+					this.showRadarSkeleton(this.root);
+					void this.refreshRadar();
+				}
 			}
 			if (this.state === "full-sessions") {
 				// Fresh entry starts unsorted-from-newest and unfiltered, matching the
@@ -1073,6 +1114,7 @@ class AgenticOSView extends ItemView {
 		if (date) date.textContent = moment().format("YYYY-MM-DD");
 		const list = card.querySelector<HTMLElement>(".rank-list");
 		if (!list) return;
+		list.classList.remove("is-loading"); // clear the manual-refresh skeleton
 		const rows = this.hnStories.slice(0, HN_CARD_LIMIT);
 		list.innerHTML = rows.length
 			? rows.map((s, i) => this.hnRowHtml(s, i + 1, false)).join("")
@@ -1147,9 +1189,13 @@ class AgenticOSView extends ItemView {
 		);
 	}
 
-	/** Swap the rank-list for shimmering skeleton rows while the first HN fetch runs. */
+	/** Swap the rank-list for shimmering skeleton rows while an HN fetch runs. On the
+	 *  dashboard, scope to the Hacker News card — its rank-list is the *second* on the
+	 *  page (the radar's comes first), so an unscoped query would skeleton the wrong card. */
 	private showHNSkeleton(root: HTMLElement): void {
-		const list = root.querySelector<HTMLElement>(".rank-list");
+		const card =
+			this.state === "dashboard" ? root.querySelector<HTMLElement>('.card[aria-label="Hacker News"]') : root;
+		const list = card?.querySelector<HTMLElement>(".rank-list");
 		if (!list) return;
 		list.classList.add("is-loading");
 		const row =
@@ -1174,6 +1220,232 @@ class AgenticOSView extends ItemView {
 		err.createSpan({ cls: "state-error__msg", text: "Couldn't reach Hacker News" });
 		const retry = err.createEl("button", { cls: "state-error__retry", text: "Retry", attr: { type: "button" } });
 		this.on(retry, "click", () => void this.refreshHackerNews());
+	}
+
+	// ── Release Radar ──────────────────────────────────────────────────────────
+
+	/** Authed accounts the radar should scan: every discovered account minus those
+	 *  excluded in settings. Empty → nothing to scan (the read returns an error state). */
+	private async radarEnabledAccounts(): Promise<string[]> {
+		const all = await discoverGhAccounts();
+		const excluded = new Set(this.plugin.settings.radarExcludedAccounts);
+		return all.filter((a) => !excluded.has(a));
+	}
+
+	/** Fetch the live radar (both accounts' deps) and paint whichever Research view is
+	 *  showing — the dashboard card (top few) or the full grouped list with the toolbar.
+	 *  The full read is the superset, so it's cached: the card slices it, the chips filter
+	 *  it. Heaviest fetch in the app, hence lazy + on a slow timer (see refresh wiring). */
+	async refreshRadar(): Promise<void> {
+		if (!this.root || (this.state !== "dashboard" && this.state !== "full-radar")) return;
+		const ticket = ++this.radarToken;
+
+		const accounts = await this.radarEnabledAccounts();
+		const adapter = this.app.vault.adapter;
+		const overlay = adapter instanceof FileSystemAdapter ? readRadarOverlay(adapter.getBasePath()) : {};
+		const data = await readReleaseRadar(accounts, overlay);
+
+		if (!this.root || ticket !== this.radarToken) return;
+		if (data.ok) {
+			this.radarRows = data.rows;
+			this.radarRepoCount = data.repoCount;
+			this.radarLoaded = true;
+			// Keep the /release-radar worklist current with the live escalated rows.
+			if (adapter instanceof FileSystemAdapter) writeRadarInput(adapter.getBasePath(), data.rows);
+		} else if (this.radarRows.length === 0) {
+			this.paintRadarError(this.root);
+			return;
+		}
+		if (this.state === "dashboard") this.paintRadarCard(this.root);
+		else this.renderRadarList(this.root);
+	}
+
+	/** Paint the dashboard's Release Radar card: the top few rows (escalated first),
+	 *  grouped, with a fresh date stamp. */
+	private paintRadarCard(root: HTMLElement): void {
+		const card = root.querySelector<HTMLElement>('.card[aria-label="Release radar"]');
+		if (!card) return;
+		const date = card.querySelector<HTMLElement>(".rsrch-date");
+		if (date) date.textContent = moment().format("YYYY-MM-DD");
+		const list = card.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading");
+		const rows = this.radarRows.slice(0, RADAR_CARD_LIMIT);
+		list.innerHTML = rows.length
+			? this.radarRowsHtml(rows)
+			: '<div class="rank-row"><div class="rank-row__body"><div class="rank-row__desc">Everything’s up to date.</div></div></div>';
+	}
+
+	/** Apply the active chip + search to the cached rows and paint the full list, the
+	 *  chip counts, the result count, and the "updated"/"N packages · M repos" meta. */
+	private renderRadarList(root: HTMLElement): void {
+		const q = this.radarFilter.trim().toLowerCase();
+		const matchesSearch = (r: RadarRow) =>
+			!q ||
+			r.pkg.toLowerCase().includes(q) ||
+			r.desc.toLowerCase().includes(q) ||
+			r.affects.some((a) => a.toLowerCase().includes(q));
+
+		const pool = this.radarRows.filter(matchesSearch);
+		const rows = pool.filter((r) => this.radarChip === "all" || r.group === this.radarChip);
+
+		// Chip counts (search-filtered pool) — markup order: All, Attention, Active, Idle.
+		const counts = [
+			pool.length,
+			pool.filter((r) => r.group === "attention").length,
+			pool.filter((r) => r.group === "active").length,
+			pool.filter((r) => r.group === "idle").length,
+		];
+		Array.from(root.querySelectorAll<HTMLElement>(".full-chip__n")).forEach((el, i) => {
+			if (i < counts.length) el.textContent = String(counts[i]);
+		});
+
+		const meta = root.querySelector<HTMLElement>(".full-bar__meta");
+		if (meta) meta.textContent = `updated ${moment().format("YYYY-MM-DD · h:mm A")}`;
+		const date = root.querySelector<HTMLElement>(".rsrch-date");
+		if (date) {
+			const p = this.radarRows.length;
+			const r = this.radarRepoCount;
+			date.textContent = `${p} package${p === 1 ? "" : "s"} · ${r} repo${r === 1 ? "" : "s"}`;
+		}
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading");
+		list.innerHTML = rows.length
+			? this.radarRowsHtml(rows)
+			: `<div class="rank-row"><div class="rank-row__body"><div class="rank-row__desc">${
+					this.radarRows.length ? "No dependencies match your filter." : "Everything’s up to date."
+			  }</div></div></div>`;
+	}
+
+	/** Walk a priority-sorted row slice, emitting a group header whenever the group (or,
+	 *  for Active/Idle, the owning repo) changes, with rows numbered 1..N across groups. */
+	private radarRowsHtml(rows: RadarRow[]): string {
+		let html = "";
+		let lastKey = "";
+		rows.forEach((r, i) => {
+			const key = r.group === "attention" ? "attention" : `${r.group}:${r.groupRepo}`;
+			if (key !== lastKey) {
+				lastKey = key;
+				html += this.radarGroupHeader(r);
+			}
+			html += this.radarRowHtml(r, i + 1);
+		});
+		return html;
+	}
+
+	private radarGroupHeader(r: RadarRow): string {
+		if (r.group === "attention") return '<div class="rank-group rank-group--attention">⚠ Needs Attention</div>';
+		const sigil = r.group === "active" ? "◆ Active" : "◇ Idle";
+		return `<div class="rank-group">${sigil} · <span class="rank-group__repo">${this.esc(r.groupRepo)}</span></div>`;
+	}
+
+	private radarRowHtml(r: RadarRow, num: number): string {
+		const badgeClass = {
+			BREAKING: "badge--breaking",
+			SECURITY: "badge--security",
+			MINOR: "badge--pos",
+			PATCH: "badge--neutral",
+		}[r.badge];
+		return (
+			`<div class="rank-row" data-url="${this.esc(r.url)}" data-title="${this.esc(r.name)}" role="link" tabindex="0">` +
+			`<span class="rank-row__num">${num}</span>` +
+			'<div class="rank-row__body">' +
+			`<div class="rank-row__line1">${this.esc(r.name)}<span class="rank-row__pts">${this.esc(
+				r.latest,
+			)}</span><span class="badge ${badgeClass}">${r.badge}</span></div>` +
+			`<div class="rank-row__desc">${this.esc(r.desc)}</div>` +
+			"</div></div>"
+		);
+	}
+
+	/** Swap the rank-list for shimmering skeleton rows while the first radar fetch runs,
+	 *  and blank the static header/toolbar placeholders (mock date, chip counts, "N
+	 *  packages · M repos") so the designer's sample values don't show during the (slow)
+	 *  fetch. The real values land when renderRadarList/paintRadarCard paints. */
+	private showRadarSkeleton(root: HTMLElement): void {
+		const card =
+			this.state === "dashboard" ? root.querySelector<HTMLElement>('.card[aria-label="Release radar"]') : root;
+		const list = card?.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.add("is-loading");
+		const row =
+			'<div class="rank-row"><span class="rank-row__num"></span>' +
+			'<div class="rank-row__body"><div class="rank-row__line1"></div>' +
+			'<div class="rank-row__desc"></div></div></div>';
+		list.innerHTML = row.repeat(this.state === "dashboard" ? RADAR_CARD_LIMIT : 10);
+
+		// Clear the placeholder figures the skeleton doesn't cover.
+		const date = card?.querySelector<HTMLElement>(".rsrch-date");
+		if (date) date.textContent = "";
+		if (this.state === "full-radar") {
+			root.querySelectorAll<HTMLElement>(".full-chip__n").forEach((el) => (el.textContent = ""));
+			const meta = root.querySelector<HTMLElement>(".full-bar__meta");
+			if (meta) meta.textContent = "loading…";
+		}
+	}
+
+	/** The designed error state into the active Research view's rank-list, with a Retry
+	 *  that refetches. Used only when nothing has painted yet (no cached rows). */
+	private paintRadarError(root: HTMLElement): void {
+		const card =
+			this.state === "dashboard" ? root.querySelector<HTMLElement>('.card[aria-label="Release radar"]') : root;
+		const list = card?.querySelector<HTMLElement>(".rank-list");
+		if (!list) return;
+		list.classList.remove("is-loading");
+		list.empty();
+		const err = list.createDiv({ cls: "state-error" });
+		err.createSpan({ cls: "state-error__msg", text: "Couldn’t reach GitHub" });
+		const retry = err.createEl("button", { cls: "state-error__retry", text: "Retry", attr: { type: "button" } });
+		this.on(retry, "click", () => void this.refreshRadar());
+	}
+
+	/** The radar full-view toolbar: chips switch the group filter (All/Attention/Active/
+	 *  Idle), the search box filters by package/repo/description. Both repaint from cache —
+	 *  no refetch. (Rows stay in priority order; no sort control.) */
+	private wireRadarToolbar(root: HTMLElement): void {
+		const chips = Array.from(root.querySelectorAll<HTMLButtonElement>(".full-chip"));
+		// Chips are in DOM order: All, ⚠ Attention, ◆ Active, Idle.
+		const order: Array<"all" | RadarGroup> = ["all", "attention", "active", "idle"];
+		chips.forEach((chip, i) => {
+			const kind = order[i];
+			if (!kind) return;
+			this.on(chip, "click", () => {
+				this.radarChip = kind;
+				for (const c of chips) c.classList.toggle("is-active", c === chip);
+				this.renderRadarList(root);
+			});
+		});
+
+		const search = root.querySelector<HTMLInputElement>(".full-search input");
+		if (search) {
+			this.on(search, "input", () => {
+				this.radarFilter = search.value;
+				this.renderRadarList(root);
+			});
+		}
+
+		const list = root.querySelector<HTMLElement>(".rank-list");
+		if (list) this.wireRadarRows(list);
+	}
+
+	/** Delegate clicks/Enter on a (re-painted) radar rank-list to open the dep's release
+	 *  notes / repo page in the embedded browser — rows carry their URL in data-url. */
+	private wireRadarRows(list: HTMLElement): void {
+		const open = (ev: Event): void => {
+			const row = (ev.target as HTMLElement).closest<HTMLElement>("[data-url]");
+			const url = row?.getAttribute("data-url");
+			if (url) void this.openRepo(url, row?.getAttribute("data-title") ?? "Release Radar");
+		};
+		this.on(list, "click", open);
+		this.on(list, "keydown", (ev) => {
+			const e = ev as KeyboardEvent;
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				open(ev);
+			}
+		});
 	}
 
 	/** Fetch + paint the Projects ("GitHub Activity") tab. Heaviest read (per-repo
@@ -1379,6 +1651,13 @@ class AgenticOSView extends ItemView {
 				if (!this.projectsLoaded) void this.refreshProjects();
 				else void this.refreshProjectRepos();
 			}
+			// Release Radar is the heaviest fetch (repos × package.json × npm), so it's
+			// lazy too: shimmer + fetch on first Research view; later opens keep the cache
+			// (the slow timer + active-leaf repaint keep it fresh).
+			if (target === "panel-research" && !this.radarLoaded) {
+				this.showRadarSkeleton(root);
+				void this.refreshRadar();
+			}
 		};
 
 		for (const tab of tabs) {
@@ -1430,13 +1709,32 @@ class AgenticOSView extends ItemView {
 		const briefRefresh = root.querySelector<HTMLElement>(".brief .icon-btn");
 		if (briefRefresh) this.on(briefRefresh, "click", () => this.runMorningBrief());
 
-		// Hacker News card: its ⟳ refetches; clicking a (async-painted) story opens it.
+		// Hacker News card: its ⟳ shows the skeleton then refetches (so the click is
+		// visible feedback, not a silent no-op); clicking a story opens it.
 		const hnCard = root.querySelector<HTMLElement>('.card[aria-label="Hacker News"]');
 		if (hnCard) {
 			const hnRefresh = hnCard.querySelector<HTMLElement>(".icon-btn");
-			if (hnRefresh) this.on(hnRefresh, "click", () => void this.refreshHackerNews());
+			if (hnRefresh)
+				this.on(hnRefresh, "click", () => {
+					this.showHNSkeleton(root);
+					void this.refreshHackerNews();
+				});
 			const list = hnCard.querySelector<HTMLElement>(".rank-list");
 			if (list) this.wireHNRows(list);
+		}
+
+		// Release Radar card: its ⟳ shows the skeleton then refetches; clicking a row
+		// opens the dep's release notes / repo page.
+		const radarCard = root.querySelector<HTMLElement>('.card[aria-label="Release radar"]');
+		if (radarCard) {
+			const radarRefresh = radarCard.querySelector<HTMLElement>(".icon-btn");
+			if (radarRefresh)
+				this.on(radarRefresh, "click", () => {
+					this.showRadarSkeleton(root);
+					void this.refreshRadar();
+				});
+			const list = radarCard.querySelector<HTMLElement>(".rank-list");
+			if (list) this.wireRadarRows(list);
 		}
 	}
 
@@ -1478,6 +1776,7 @@ class AgenticOSView extends ItemView {
 		}
 		if (this.state === "full-sessions") this.wireSessionsToolbar(root);
 		if (this.state === "full-hn") this.wireHNToolbar(root);
+		if (this.state === "full-radar") this.wireRadarToolbar(root);
 	}
 
 	/** The Hacker News list toolbar: the chips switch the filter (Top/Show/Ask/New), the
@@ -2052,6 +2351,15 @@ export default class AgenticOSPlugin extends Plugin {
 			if (view instanceof AgenticOSView) void view.refreshFolderSessions();
 		}
 	}
+
+	/** Re-fetch the Release Radar in every open view — used after the account checklist
+	 *  changes. No-op in views that haven't loaded the radar yet. */
+	repaintRadar(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENTIC_OS)) {
+			const view = leaf.view;
+			if (view instanceof AgenticOSView) void view.refreshRadar();
+		}
+	}
 }
 
 /** A checklist of detected Claude Code project folders, for building the "merge
@@ -2178,6 +2486,38 @@ class AgenticOSSettingTab extends PluginSettingTab {
 						this.plugin.repaintGitHub();
 					})
 			);
+
+		// Release Radar account checklist — discovered from `gh auth status` (async), one
+		// toggle per authed account. Default on; toggling off records the account in
+		// radarExcludedAccounts so newly-added accounts always start included.
+		new Setting(containerEl).setName("Release Radar accounts").setHeading();
+		const radarHost = containerEl.createDiv();
+		radarHost.createDiv({
+			cls: "setting-item-description",
+			text: "Which authed GitHub accounts the radar scans for dependency updates. All on by default.",
+		});
+		void (async () => {
+			const accounts = await discoverGhAccounts();
+			if (!accounts.length) {
+				radarHost.createDiv({
+					cls: "setting-item-description",
+					text: "No gh accounts found — run `gh auth login`.",
+				});
+				return;
+			}
+			for (const acct of accounts) {
+				new Setting(radarHost).setName(acct).addToggle((t) =>
+					t.setValue(!this.plugin.settings.radarExcludedAccounts.includes(acct)).onChange(async (on) => {
+						const cur = new Set(this.plugin.settings.radarExcludedAccounts);
+						if (on) cur.delete(acct);
+						else cur.add(acct);
+						this.plugin.settings.radarExcludedAccounts = [...cur];
+						await this.plugin.saveSettings();
+						this.plugin.repaintRadar();
+					}),
+				);
+			}
+		})();
 
 		const mergeSetting = new Setting(containerEl)
 			.setName("Merge session folders")

@@ -46,14 +46,23 @@ const EMPTY: GitHubStats = {
 
 /** GUI-launched Obsidian on macOS doesn't inherit the shell PATH, so `gh` at a
  *  Homebrew/usr path won't be found by name. Augment PATH with the usual spots
- *  rather than probing for the binary. */
-function runGh(args: string[]): Promise<string> {
+ *  rather than probing for the binary.
+ *
+ *  `token`, when given, is injected as `GH_TOKEN` for this call only — the Release
+ *  Radar uses it to query each authed account with its own token (`gh auth token
+ *  --user <account>`) without `gh auth switch`, which would disrupt the user's
+ *  terminal. Omitted → the default gh-authed identity, unchanged. */
+export function runGh(args: string[], token?: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(
 			"gh",
 			args,
 			{
-				env: { ...process.env, PATH: `${process.env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin` },
+				env: {
+					...process.env,
+					PATH: `${process.env.PATH ?? ""}:/opt/homebrew/bin:/usr/local/bin:/usr/bin`,
+					...(token ? { GH_TOKEN: token } : {}),
+				},
 				maxBuffer: 16 * 1024 * 1024,
 				timeout: 30_000,
 			},

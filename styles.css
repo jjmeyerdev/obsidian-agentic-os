@@ -1707,6 +1707,34 @@
   line-height: 1.45;
   color: var(--text-muted);
 }
+/* affected repos for an escalated row — accent chips so they don't blend into the desc */
+.agentic-os .rank-row__affects {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+}
+.agentic-os .rank-row__affects-label {
+  font-family: var(--font-label);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-right: 1px;
+}
+.agentic-os .rank-row__repo {
+  font-family: var(--font-num);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: var(--border) solid color-mix(in oklab, var(--accent) 35%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 1px 7px;
+  white-space: nowrap;
+}
 /* group labels inside Release Radar — escalations vs. the active repo */
 .agentic-os .rank-group {
   display: flex;

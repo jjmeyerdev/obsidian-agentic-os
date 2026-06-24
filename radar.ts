@@ -60,7 +60,7 @@ export interface RadarData {
  *  + npm fan-out. The radar tracks what you're actively shipping, so recency is the cut. */
 const MAX_REPOS_PER_ACCOUNT = 40;
 /** A repo pushed within this many days is "Active"; older repos' updates are "Idle". */
-const ACTIVE_WITHIN_DAYS = 14;
+const ACTIVE_WITHIN_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Packages per GitHub Advisory GraphQL call (aliased) — keeps each query small. */
 const ADVISORY_CHUNK = 30;
@@ -301,7 +301,10 @@ export async function readReleaseRadar(
 
 	interface Pending {
 		pkg: string; url: string; current: SemVer; latest: SemVer;
-		badge: "BREAKING" | "MINOR" | "PATCH"; use: DepUse;
+		badge: "BREAKING" | "MINOR" | "PATCH";
+		/** Only the repos still behind `latest` — a repo bumped to the newest version
+		 *  drops out so it stops being listed under (and grouping) this row. */
+		outdated: Array<{ name: string; pushedAt: number }>;
 	}
 	const pending: Pending[] = [];
 	pkgs.forEach((pkg, i) => {
@@ -310,15 +313,20 @@ export async function readReleaseRadar(
 		if (!np || !use) return;
 		const lat = parseStrict(np.version);
 		if (!lat) return;
-		// Lowest current across the repos → the largest meaningful delta.
+		// Per-repo: keep a repo only if its own pinned version is below latest, so a repo
+		// already bumped to the newest version drops out. The lowest of those that remain
+		// is `current` (the largest meaningful delta).
 		let cur: SemVer | null = null;
-		for (const r of use.ranges) {
-			const v = parseLoose(r);
-			if (v && (cur === null || cmp(v, cur) < 0)) cur = v;
-		}
-		if (!cur || cmp(lat, cur) <= 0) return; // unparsable or already current
+		const outdated: Array<{ name: string; pushedAt: number }> = [];
+		use.repos.forEach((repo, ri) => {
+			const v = parseLoose(use.ranges[ri]);
+			if (!v || cmp(lat, v) <= 0) return; // unparsable or this repo is already current
+			outdated.push(repo);
+			if (cur === null || cmp(v, cur) < 0) cur = v;
+		});
+		if (!cur || !outdated.length) return; // every repo already current
 		const url = np.slug ? `https://github.com/${np.slug}/releases` : `https://www.npmjs.com/package/${pkg}`;
-		pending.push({ pkg, url, current: cur, latest: lat, badge: bump(cur, lat), use });
+		pending.push({ pkg, url, current: cur, latest: lat, badge: bump(cur, lat), outdated });
 	});
 
 	// Security overlay: any pending dep below a published patch → SECURITY (escalated).
@@ -330,19 +338,18 @@ export async function readReleaseRadar(
 		const isSecurity = secure.has(p.pkg);
 		const badge: RadarBadge = isSecurity ? "SECURITY" : p.badge;
 		const escalated = badge === "BREAKING" || badge === "SECURITY";
-		const affects = p.use.repos
+		const affects = p.outdated
 			.slice()
 			.sort((a, b) => b.pushedAt - a.pushedAt)
 			.map((r) => r.name)
 			.filter((n, i, a) => a.indexOf(n) === i);
-		const top = p.use.repos.reduce((best, r) => (r.pushedAt > best.pushedAt ? r : best));
+		const top = p.outdated.reduce((best, r) => (r.pushedAt > best.pushedAt ? r : best));
 		const group: RadarGroup = escalated
 			? "attention"
 			: now - top.pushedAt <= ACTIVE_WITHIN_DAYS * DAY_MS
 				? "active"
 				: "idle";
-		const affectsNote = affects.length ? ` · affects ${affects.join(" + ")}` : "";
-		const terse = `${fmt(p.current)} → ${fmt(p.latest)}${affectsNote}`;
+		const terse = `${fmt(p.current)} → ${fmt(p.latest)}`;
 		const rich = overlay[`${p.pkg}@${p.latest[0]}.${p.latest[1]}.${p.latest[2]}`];
 		return {
 			pkg: p.pkg,
@@ -352,6 +359,8 @@ export async function readReleaseRadar(
 			latest: fmt(p.latest),
 			badge,
 			escalated,
+			// Affected repos render as their own chips (see radarRowHtml), so the desc
+			// stays just the sentence / version delta.
 			desc: rich || terse,
 			affects,
 			group,

@@ -1348,6 +1348,14 @@ class AgenticOSView extends ItemView {
 			MINOR: "badge--pos",
 			PATCH: "badge--neutral",
 		}[r.badge];
+		// Escalated rows have no group-repo header, so surface the impacted repos as their
+		// own accent chips — clearer than burying them in the muted description text.
+		const affectsHtml =
+			r.escalated && r.affects.length
+				? `<div class="rank-row__affects"><span class="rank-row__affects-label">affects</span>${r.affects
+						.map((a) => `<span class="rank-row__repo">${this.esc(a)}</span>`)
+						.join("")}</div>`
+				: "";
 		return (
 			`<div class="rank-row" data-url="${this.esc(r.url)}" data-title="${this.esc(r.name)}" role="link" tabindex="0">` +
 			`<span class="rank-row__num">${num}</span>` +
@@ -1356,6 +1364,7 @@ class AgenticOSView extends ItemView {
 				r.latest,
 			)}</span><span class="badge ${badgeClass}">${r.badge}</span></div>` +
 			`<div class="rank-row__desc">${this.esc(r.desc)}</div>` +
+			affectsHtml +
 			"</div></div>"
 		);
 	}
@@ -1774,6 +1783,23 @@ class AgenticOSView extends ItemView {
 		if (back) {
 			this.on(back, "click", () => this.navigate("dashboard"));
 		}
+		// The shell header's ⟳ is wired per-state in wireDashboard; full views render via
+		// this path, so wire it here too — otherwise it's a dead button on every "Full ↗"
+		// view. Data-backed views refetch in place (with the skeleton for feedback); the
+		// rest fall back to the dashboard's full reload.
+		const shellRefresh = root.querySelector<HTMLElement>(".shell-head__actions .icon-btn");
+		if (shellRefresh)
+			this.on(shellRefresh, "click", () => {
+				if (this.state === "full-radar") {
+					this.showRadarSkeleton(root);
+					void this.refreshRadar();
+				} else if (this.state === "full-hn") {
+					this.showHNSkeleton(root);
+					void this.refreshHackerNews();
+				} else {
+					this.plugin.reloadSelf();
+				}
+			});
 		if (this.state === "full-sessions") this.wireSessionsToolbar(root);
 		if (this.state === "full-hn") this.wireHNToolbar(root);
 		if (this.state === "full-radar") this.wireRadarToolbar(root);

@@ -164,9 +164,6 @@ const MIN_CALIBRATION_PCT = 5;
 /** Cap on retained samples — newest win, keeping the estimate current. */
 const MAX_SAMPLES = 60;
 
-const FIVE_HOUR_TOKEN_CAP = 10_990_000;
-const SEVEN_DAY_TOKEN_CAP = FIVE_HOUR_TOKEN_CAP * (WINDOWS.seven_day.hours / WINDOWS.five_hour.hours);
-
 /** 312510 → "312.51K", 2_000_000 → "2.00M". Sub-1K values render as-is. */
 function formatTokens(n: number): string {
 	if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
@@ -527,11 +524,11 @@ class AgenticOSView extends ItemView {
 		// Bail if a re-render or newer refresh superseded us mid-read.
 		if (!this.root || ticket !== this.burnToken) return;
 
-		await this.plugin.updateCalibration(usage);
-		this.paintTokenBurn(this.root, usage, win);
+		const displayCap = await this.plugin.updateCalibration(usage);
+		this.paintTokenBurn(this.root, usage, win, displayCap);
 	}
 
-	private paintTokenBurn(root: HTMLElement, usage: Usage, win: RateWindow): void {
+	private paintTokenBurn(root: HTMLElement, usage: Usage, win: RateWindow, displayCap: number | null): void {
 		const hero = root.querySelector<HTMLElement>(".token-hero");
 		if (!hero) return;
 
@@ -579,10 +576,12 @@ class AgenticOSView extends ItemView {
 			tick.textContent = i === 0 ? "0" : Math.round(frac) + "%";
 		});
 
-		// Token figures are estimates (≈), aligned to the snapshot's window.
-		const displayCap = win === "five_hour" ? FIVE_HOUR_TOKEN_CAP : SEVEN_DAY_TOKEN_CAP;
+		// Token figures are local transcript estimates, aligned to the snapshot's window.
 		set(".token-hero__value", formatTokens(usage.measuredTokens));
-		set(".token-hero__sub:not(.token-hero__sub--proj)", "/ " + formatTokens(displayCap));
+		set(
+			".token-hero__sub:not(.token-hero__sub--proj)",
+			displayCap === null ? "/ est —" : "/ est " + formatTokens(displayCap),
+		);
 		set(
 			".token-hero__sub--proj",
 			usage.resetsAt === null ? "" : "↺ " + formatCountdown(usage.resetsAt * 1000 - Date.now()),

@@ -1,6 +1,7 @@
 # PRD — Quick Action progress notes (living-note slice)
 
-**Status:** proposed
+**Status:** v1 shipped (5 commands write/tick notes, verified live); v2 built (`progress.ts`
++ plugin wiring, builds clean) — pending Obsidian verification
 **Slice:** dashboard-live effort — Overview tab, Quick Actions + a live progress affordance
 **Date:** 2026-06-24
 

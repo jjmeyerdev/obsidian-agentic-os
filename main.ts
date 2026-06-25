@@ -19,6 +19,7 @@ import {
 import { readDayPlan, setTaskDone, addTask, todayDailyNotePath, DayPlan } from "./dayplan";
 import { readBrief, Brief } from "./brief";
 import { readActivity, ActivityRun } from "./activity";
+import { readActiveRun, watchRuns, RunProgress } from "./progress";
 import { readHackerNews, HNStory, HNKind } from "./hn";
 import { readReleaseRadar, readRadarOverlay, writeRadarInput, discoverGhAccounts, RadarRow, RadarGroup } from "./radar";
 import { readClaudeStatus, ClaudeStatus } from "./claudeStatus";
@@ -105,6 +106,26 @@ const DEFAULT_SETTINGS: AgenticOSSettings = {
 /** Token Burn background refresh cadence — the steady "Live" heartbeat. Focus
  *  events repaint on demand, so this only has to keep an idle pane current. */
 const TOKEN_BURN_INTERVAL_MS = 60_000;
+
+/** Quick Action progress: optimistic-spinner timeouts. A clicked action spins until its
+ *  `dashboard-runs/` note first appears (APPEAR) and then until the note stops advancing
+ *  (STALE, reset on each step); either timeout reverts the button, so a command without the
+ *  progress protocol still behaves as before. DONE_LINGER keeps the ✓/✗ briefly on finish. */
+const PROGRESS_APPEAR_MS = 8_000;
+const PROGRESS_STALE_MS = 120_000;
+const PROGRESS_DONE_LINGER_MS = 2_500;
+
+/** A Quick Action button showing an optimistic running state, tracked while its run is live. */
+interface RunningAction {
+	btn: HTMLButtonElement;
+	/** When the button was clicked (ms) — used to reject a stale prior run's note. */
+	clickMs: number;
+	/** Last note `updated` ms we painted, so we only reset the stale timer on real progress. */
+	lastUpdatedMs: number;
+	/** Whether a matching note has appeared yet (switches APPEAR → STALE timeout). */
+	seen: boolean;
+	timer: ReturnType<typeof setTimeout>;
+}
 
 /** Claude Statuspage refresh cadence. Incidents change slower than token usage,
  *  but the header should recover without waiting for a manual pane focus. */
@@ -290,6 +311,10 @@ class AgenticOSView extends ItemView {
 	private sessionToken = 0;
 	/** Stale-paint guard for the Activity Feed run-log read. */
 	private activityToken = 0;
+	/** Stale-paint guard for Quick Action progress reads (bumped on render + each watch tick). */
+	private progressToken = 0;
+	/** Quick Actions currently mid-run, keyed by button label, driving the live progress UI. */
+	private runningActions = new Map<string, RunningAction>();
 	/** Stale-paint guard for the full sessions list ("Full ↗" deep-dive). */
 	private sessionsListToken = 0;
 	/** Full sessions list state: fetched rows (newest-first) plus the toolbar's live
@@ -400,10 +425,18 @@ class AgenticOSView extends ItemView {
 		// "Pull Metrics" quick action — rather than waiting up to 60s for the heartbeat.
 		// refreshTokenBurn already no-ops unless the dashboard is the active state.
 		this.register(watchSnapshot(() => void this.refreshTokenBurn()));
+		// Reflect Quick Action progress notes live: repaint the running button + progress line
+		// whenever a `dashboard-runs/` note is written. onRunsChanged no-ops unless a button is
+		// mid-run, so the watch is cheap. Desktop-only (Node fs).
+		const runsAdapter = this.app.vault.adapter;
+		if (runsAdapter instanceof FileSystemAdapter) {
+			this.register(watchRuns(runsAdapter.getBasePath(), () => this.onRunsChanged()));
+		}
 	}
 
 	async onClose(): Promise<void> {
 		this.clearListeners();
+		this.resetRunningActions();
 		this.root?.empty();
 		this.root = null;
 	}
@@ -427,6 +460,9 @@ class AgenticOSView extends ItemView {
 	private render(): void {
 		if (!this.root) return;
 		this.clearListeners();
+		// innerHTML reset orphans the running buttons + progress line; drop their timers and
+		// bump the progress token so in-flight watch reads can't paint into the new render.
+		this.resetRunningActions();
 		// Single, well-scoped innerHTML on the root container — the markup is
 		// static trusted content generated from the source dashboards.
 		this.root.innerHTML = MARKUP[this.state];
@@ -1776,9 +1812,128 @@ class AgenticOSView extends ItemView {
 				// which headless `claude -p` never sees. So there's no file change for
 				// watchSnapshot to catch — re-read it ourselves so the panel repaints and
 				// "last pull" reflects the snapshot's true current age on demand.
-				if (label === "Pull Metrics") void this.refreshTokenBurn();
+				if (label === "Pull Metrics") {
+					void this.refreshTokenBurn();
+					return; // instant + no run note → skip the optimistic spinner
+				}
+				// Optimistically show a running state; the dashboard-runs note (if the command
+				// writes one) drives the live progress line, else it reverts on timeout.
+				this.startRun(label, btn);
 			});
 		}
+	}
+
+	/** Optimistically flip a clicked Quick Action into a running state. Its `dashboard-runs/`
+	 *  note (if any) then drives the live progress line via the folder watch; if no note
+	 *  appears within APPEAR the button reverts, so commands without the progress protocol
+	 *  behave as before. */
+	private startRun(label: string, btn: HTMLButtonElement): void {
+		const prev = this.runningActions.get(label);
+		if (prev) clearTimeout(prev.timer);
+		btn.classList.remove("is-done", "is-failed");
+		btn.classList.add("is-running");
+		const timer = setTimeout(() => this.timeoutRun(label), PROGRESS_APPEAR_MS);
+		this.runningActions.set(label, { btn, clickMs: Date.now(), lastUpdatedMs: NaN, seen: false, timer });
+		this.paintProgressLine(`${label} — starting…`, "running");
+	}
+
+	/** Folder-watch callback: for each button mid-run, re-read its newest progress note and
+	 *  repaint. Guarded by progressToken so reads from a superseded render never paint. */
+	private onRunsChanged(): void {
+		if (this.runningActions.size === 0 || !this.root || this.state !== "dashboard") return;
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) return;
+		const base = adapter.getBasePath();
+		const ticket = ++this.progressToken;
+		for (const label of this.runningActions.keys()) {
+			void readActiveRun(base, label).then((run) => {
+				if (ticket !== this.progressToken || !run) return;
+				const st = this.runningActions.get(label);
+				if (!st) return;
+				// Reject a stale prior run's note: its `started` predates this click by over a
+				// minute (the note's timestamp is minute-granular, hence the tolerance).
+				if (Number.isFinite(run.startedMs) && run.startedMs < st.clickMs - 60_000) return;
+				this.applyRunProgress(label, st, run);
+			});
+		}
+	}
+
+	/** Paint one run's current state. While running, refresh the progress line and (on real
+	 *  advancement) push the stale timeout back; on done/failed, finish the button. */
+	private applyRunProgress(label: string, st: RunningAction, run: RunProgress): void {
+		if (run.status === "running") {
+			if (!st.seen || run.updatedMs !== st.lastUpdatedMs) {
+				st.seen = true;
+				st.lastUpdatedMs = run.updatedMs;
+				this.resetStaleTimer(label);
+			}
+			const pos = run.step && run.stepsTotal ? `step ${run.step}/${run.stepsTotal}` : "working";
+			this.paintProgressLine(`${label} — ${pos}: ${run.current}`, "running");
+		} else {
+			this.finishRun(label, run.status);
+		}
+	}
+
+	/** A run reached done/failed: flash the button, hold it briefly, then revert. */
+	private finishRun(label: string, status: "done" | "failed"): void {
+		const st = this.runningActions.get(label);
+		if (!st) return;
+		clearTimeout(st.timer);
+		this.runningActions.delete(label);
+		st.btn.classList.remove("is-running");
+		st.btn.classList.add(status === "done" ? "is-done" : "is-failed");
+		this.paintProgressLine(`${label} — ${status === "done" ? "done ✓" : "failed ✗"}`, status);
+		const btn = st.btn;
+		const linger = setTimeout(() => {
+			btn.classList.remove("is-done", "is-failed");
+			this.clearProgressLineIfIdle();
+		}, PROGRESS_DONE_LINGER_MS);
+		// Flushed on the next render/close so the linger can't touch an orphaned button.
+		this.cleanups.push(() => clearTimeout(linger));
+	}
+
+	/** No note appeared (APPEAR) or the note stopped advancing (STALE) → revert silently. */
+	private timeoutRun(label: string): void {
+		const st = this.runningActions.get(label);
+		if (!st) return;
+		this.runningActions.delete(label);
+		st.btn.classList.remove("is-running");
+		this.clearProgressLineIfIdle();
+	}
+
+	private resetStaleTimer(label: string): void {
+		const st = this.runningActions.get(label);
+		if (!st) return;
+		clearTimeout(st.timer);
+		st.timer = setTimeout(() => this.timeoutRun(label), PROGRESS_STALE_MS);
+	}
+
+	/** The single live progress line, inserted right after the Quick Actions grid. */
+	private paintProgressLine(text: string, status: "running" | "done" | "failed"): void {
+		if (!this.root) return;
+		const qa = this.root.querySelector<HTMLElement>(".quick-actions");
+		if (!qa) return;
+		let line = this.root.querySelector<HTMLElement>(".qa-progress");
+		if (!line) {
+			line = document.createElement("div");
+			line.className = "qa-progress";
+			qa.insertAdjacentElement("afterend", line);
+		}
+		line.textContent = text;
+		line.dataset.status = status;
+	}
+
+	private clearProgressLineIfIdle(): void {
+		if (this.runningActions.size > 0) return;
+		this.root?.querySelector(".qa-progress")?.remove();
+	}
+
+	/** Drop all running-state timers + entries (on re-render/close). The buttons and progress
+	 *  line are orphaned by the innerHTML reset; bumping the token cancels in-flight reads. */
+	private resetRunningActions(): void {
+		for (const st of this.runningActions.values()) clearTimeout(st.timer);
+		this.runningActions.clear();
+		this.progressToken++;
 	}
 
 	/** Back button returns a full view to the dashboard. */

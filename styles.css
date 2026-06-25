@@ -861,6 +861,34 @@
 }
 .agentic-os .quick-action:active { transform: translateY(0); }
 
+/* Live run states painted by the Quick Action progress watch (progress.ts). */
+.agentic-os .quick-action.is-running {
+  color: var(--text-primary);
+  border-color: color-mix(in oklab, var(--accent) 55%, transparent);
+  box-shadow: var(--ring-hover);
+  cursor: progress;
+  animation: qa-pulse 1.3s var(--ease-out) infinite;
+}
+@keyframes qa-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.agentic-os .quick-action.is-done {
+  color: var(--positive);
+  border-color: color-mix(in oklab, var(--positive) 55%, transparent);
+}
+.agentic-os .quick-action.is-failed {
+  color: var(--negative);
+  border-color: color-mix(in oklab, var(--negative) 55%, transparent);
+}
+
+.agentic-os .qa-progress {
+  margin-top: 10px;
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.agentic-os .qa-progress[data-status="done"]   { color: var(--positive); }
+.agentic-os .qa-progress[data-status="failed"] { color: var(--negative); }
+
 @container (max-width: 920px) {
   .agentic-os .quick-actions { grid-template-columns: repeat(3, 1fr); }
 }

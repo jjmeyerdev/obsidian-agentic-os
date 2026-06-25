@@ -1,6 +1,6 @@
 // Source of truth for the Token Burn panel.
 //
-// The authoritative 5h rate-limit percentage is NOT reconstructable from local
+// The authoritative subscription rate-limit percentage is NOT reconstructable from local
 // token sums — it comes from Anthropic's server-side rate-limit headers, which
 // Claude Code surfaces to the statusline. The user's statusline script mirrors
 // that payload to ~/.claude/usage-snapshot.json expressly for this dashboard.
@@ -19,9 +19,9 @@ export type RateWindow = "five_hour" | "seven_day";
 export interface Usage {
 	/** false when the snapshot is unreachable (mobile, statusline never ran). */
 	ok: boolean;
-	/** Authoritative five_hour.used_percentage (0–100), or null if absent. */
+	/** Authoritative rate_limits[window].used_percentage (0–100), or null if absent. */
 	pct: number | null;
-	/** Epoch seconds when the 5h window resets, or null. */
+	/** Epoch seconds when the selected window resets, or null. */
 	resetsAt: number | null;
 	/** Epoch seconds the snapshot was written (drives "last pull" + alignment). */
 	snapshotTs: number | null;

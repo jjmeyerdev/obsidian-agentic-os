@@ -21,16 +21,20 @@ the statusline. So the panel reads two different qualities of data:
   rate-limit payload to `~/.claude/usage-snapshot.json` expressly for this dashboard.
   The panel reads `rate_limits[window].used_percentage`, `…resets_at`, and the
   snapshot's `ts`.
-- **Token figure (e.g. "≈5.67M") — an estimate.** A weighted sum of the local
+- **Token figure (e.g. "≈5.67M") — a local estimate.** A weighted sum of the local
   `*.jsonl` transcripts under `~/.claude/projects`, counting only messages whose
   timestamp falls in the snapshot's actual window `[resets_at − windowHours, ts]`.
   Cache reads dominate raw counts but are priced at ~a tenth of a fresh token, so
   they're weighted ×0.1 — this weighting only affects the token estimate, never the
-  displayed percentage.
+  displayed percentage. On Pro/Max subscriptions, the percentage can also include
+  Claude usage outside these local transcripts, such as Claude.ai, IDE sessions, or
+  server-counted attempts that never produce a complete local transcript turn.
 
 ## Self-calibrated cap
 
-The "100% =" token cap is not hard-coded (it shifts with model mix and pricing).
+The "100% =" token cap is not hard-coded or linearly extrapolated between windows
+(the 5h and weekly subscription limits are separate). It shifts with model mix,
+plan behavior, and local transcript coverage.
 It's the **median of `tokens ÷ (pct/100)`** across retained calibration samples, so
 the cap converges on the real ceiling as samples accrue. Details:
 
